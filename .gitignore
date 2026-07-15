@@ -175,3 +175,10 @@ CLAUDE.md
 debug*
 doc/
 notebooks/
+
+# AutoDL custom ignores
+*.pth
+*.zip
+*.mp4
+*.ply
+metrics.json
