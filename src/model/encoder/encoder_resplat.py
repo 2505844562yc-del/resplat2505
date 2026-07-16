@@ -339,6 +339,24 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 for _ in range(self.cfg.render_error_mv_attn_blocks)
             ])
 
+        # === Single-GPU fine-tuning freeze strategy ===
+        # Freeze depth_predictor (106M params) - already well-trained, no need to update
+        for param in self.depth_predictor.parameters():
+            param.requires_grad = False
+        print("FROZEN: depth_predictor (106M params)")
+
+        # Freeze Point Transformer initial prediction (97M params) for Phase 1
+        # Can be unfrozen in Phase 2 for better initial predictions
+        for param in self.pt.parameters():
+            param.requires_grad = False
+        print("FROZEN: pt / Point Transformer (97M params)")
+
+        # Count trainable parameters
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"Model: {total_params/1e6:.1f}M total, {trainable_params/1e6:.1f}M trainable ({trainable_params/total_params*100:.1f}%)")
+
+
 
     def forward(
         self,
