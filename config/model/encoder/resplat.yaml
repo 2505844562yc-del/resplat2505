@@ -96,3 +96,7 @@ pt_update_amp: true
 use_checkpointing: false
 init_use_checkpointing: false
 recurrent_use_checkpointing: false
+
+# Semantic refinement (innovation)
+use_semantic: false
+use_semantic_gate: false

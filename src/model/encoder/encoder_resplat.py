@@ -28,6 +28,8 @@ from .point_transformer.layer import PlainPointTransformer, PointLinearWrapper, 
 
 
 from .layer import ResNetFeatureWarpper
+from .semantic_adapter import SemanticAdapter
+from .semantic_attention import SemanticAttentionGate, SemanticProjector
 
 @dataclass
 class EncoderReSplatCfg:
@@ -113,6 +115,10 @@ class EncoderReSplatCfg:
     use_checkpointing: bool
     init_use_checkpointing: bool
     recurrent_use_checkpointing: bool
+
+    # Semantic refinement (innovation modules A + B)
+    use_semantic: bool = False
+    use_semantic_gate: bool = False
 
 
 
@@ -355,6 +361,24 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"Model: {total_params/1e6:.1f}M total, {trainable_params/1e6:.1f}M trainable ({trainable_params/total_params*100:.1f}%)")
+        # === Semantic refinement modules (innovation) ===
+        if self.cfg.use_semantic:
+            self.semantic_adapter = SemanticAdapter(
+                in_channels=384, bottleneck=64, out_channels=256
+            )
+            self.semantic_projector = SemanticProjector(
+                in_channels=256, out_channels=256
+            )
+            if self.cfg.use_semantic_gate:
+                self.semantic_gate = SemanticAttentionGate(
+                    semantic_channels=256, hidden_dim=64
+                )
+            sem_params = sum(p.numel() for p in self.semantic_adapter.parameters())
+            sem_params += sum(p.numel() for p in self.semantic_projector.parameters())
+            if self.cfg.use_semantic_gate:
+                sem_params += sum(p.numel() for p in self.semantic_gate.parameters())
+            print(f"Semantic modules: {sem_params/1e3:.1f}K params (trainable)")
+
 
 
 
@@ -427,6 +451,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         # use pixelshuffle and pixelunshuffle to align all feature resolutions
         # first resize the mono features to 1/16
         mono_features = [F.interpolate(x, size=(h // 16, w // 16), mode='bilinear', align_corners=True) for x in results_dict['raw_mono_features']]
+        
+        # Save raw DINOv2 features for semantic refinement (Module A)
+        if self.cfg.use_semantic:
+            semantic_raw = results_dict['raw_mono_features'][0].detach()
         if self.cfg.fixed_latent_size:
             scale_factor = 4
             mono_features = [F.pixel_shuffle(x, upscale_factor=scale_factor) for x in mono_features]
@@ -755,6 +783,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 )
             visualization_dump["depth_fullres"] = fullres_depth
 
+        # Adapt semantic features for refinement (Module A)
+        if self.cfg.use_semantic:
+            self._semantic_adapted = self.semantic_adapter(semantic_raw)
+        else:
+            self._semantic_adapted = None
+        
         if self.cfg.return_depth:
             # original depth predictions from the depth model
             if len(depth_preds) > 1:
@@ -774,7 +808,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
             if self.cfg.num_refine > 0:
                 results.update({
-                    "condition_features": condition_features
+                    "condition_features": condition_features,
+                    "semantic_adapted": semantic_adapted
                 })
 
             return results
@@ -931,6 +966,15 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
             rgb_render_error = self.update_rgb_error_proj(rgb_render_error)
             input_render_error = input_render_error + rgb_render_error
+            
+            # Module B: Semantic-guided refinement attention
+            if self.cfg.use_semantic and self.cfg.use_semantic_gate:
+                latent_h = h // self.cfg.latent_downsample
+                latent_w = w // self.cfg.latent_downsample
+                sem_proj = self.semantic_projector(self._semantic_adapted, b=b, v=v,
+                                                   latent_h=latent_h, latent_w=latent_w)
+                sem_gate = self.semantic_gate(sem_proj)
+                input_render_error = input_render_error * (1.0 + sem_gate)
 
             # stop gradient for last predictions
             prev_gaussians_concat = torch.cat((
