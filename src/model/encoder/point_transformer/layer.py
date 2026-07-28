@@ -249,7 +249,7 @@ class PlainPointTransformer(nn.Module):
                     def custom_forward(p, x, o, idx):
                         return blk((p, x, o), knn_idx=idx)
 
-                    x = torch.utils.checkpoint.checkpoint(custom_forward, p, x, o, use_reentrant=not self.use_checkpointing)
+                    x = torch.utils.checkpoint.checkpoint(custom_forward, p, x, o, knn_idx, use_reentrant=not self.use_checkpointing)
                 else:
                     x = blk((p, x, o), knn_idx=knn_idx)
 
