@@ -90,6 +90,7 @@ use_semantic_boundary_feedback: false
 semantic_boundary_gain: 5.0
 semantic_boundary_confidence_floor: 0.5
 semantic_boundary_feedback_scale: 1.0
+semantic_boundary_feature_mode: residual
 
 # AMP
 use_amp: true

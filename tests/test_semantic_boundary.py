@@ -4,6 +4,7 @@ import torch
 
 from src.model.semantic_boundary import (
     balanced_boundary_l1,
+    confidence_gated_boundary_features,
     confidence_gated_boundary_residual,
     rgb_to_soft_boundary,
 )
@@ -30,6 +31,28 @@ class SemanticBoundaryTest(unittest.TestCase):
             image, target, confidence, confidence_floor=0.5
         )
         self.assertEqual(float(residual.abs().sum()), 0.0)
+
+    def test_residual_gradient_features_add_direction_channels(self):
+        image = torch.zeros(1, 1, 3, 7, 7, requires_grad=True)
+        target = torch.zeros(1, 1, 1, 7, 7)
+        target[..., :, 4:] = 1.0
+        confidence = torch.ones_like(target)
+        features = confidence_gated_boundary_features(
+            image, target, confidence, mode="residual_gradient"
+        )
+        self.assertEqual(features.shape, (1, 1, 3, 7, 7))
+        self.assertGreater(float(features[..., 1, :, 3:5].abs().sum()), 0.0)
+        self.assertEqual(float(features[..., 2, 2:-2, 2:-2].abs().sum()), 0.0)
+        features.mean().backward()
+        self.assertTrue(torch.isfinite(image.grad).all())
+
+    def test_boundary_feature_mode_is_validated(self):
+        image = torch.zeros(1, 1, 3, 5, 5)
+        target = torch.zeros(1, 1, 1, 5, 5)
+        with self.assertRaises(ValueError):
+            confidence_gated_boundary_features(
+                image, target, torch.ones_like(target), mode="unknown"
+            )
 
     def test_balanced_loss_treats_sparse_positive_class_equally(self):
         target = torch.zeros(1, 1, 1, 4, 4)

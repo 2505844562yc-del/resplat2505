@@ -28,7 +28,7 @@ from .point_transformer.layer import PlainPointTransformer, PointLinearWrapper, 
 
 
 from .layer import ResNetFeatureWarpper
-from ..semantic_boundary import confidence_gated_boundary_residual
+from ..semantic_boundary import confidence_gated_boundary_features
 
 @dataclass
 class EncoderReSplatCfg:
@@ -108,6 +108,7 @@ class EncoderReSplatCfg:
     semantic_boundary_gain: float
     semantic_boundary_confidence_floor: float
     semantic_boundary_feedback_scale: float
+    semantic_boundary_feature_mode: Literal["residual", "residual_gradient"]
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -290,9 +291,13 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 )
 
             if self.cfg.use_semantic_boundary_feedback:
+                semantic_channels = (
+                    1 if self.cfg.semantic_boundary_feature_mode == "residual" else 3
+                )
                 boundary_channels = (
-                    1 if self.cfg.init_gaussian_multiple == 4
-                    else self.cfg.latent_downsample ** 2
+                    semantic_channels
+                    if self.cfg.init_gaussian_multiple == 4
+                    else semantic_channels * self.cfg.latent_downsample ** 2
                 )
                 # Keep ablation data sampling identical: module construction must
                 # not advance the global RNG used by the iterable dataset.
@@ -937,12 +942,13 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             if self.cfg.use_semantic_boundary_feedback:
                 if "boundary" not in context or "boundary_confidence" not in context:
                     raise KeyError("Semantic feedback requires context boundary maps")
-                boundary_error = confidence_gated_boundary_residual(
+                boundary_error = confidence_gated_boundary_features(
                     input_render.color,
                     context["boundary"],
                     context["boundary_confidence"],
                     gain=self.cfg.semantic_boundary_gain,
                     confidence_floor=self.cfg.semantic_boundary_confidence_floor,
+                    mode=self.cfg.semantic_boundary_feature_mode,
                 )
                 boundary_error = rearrange(
                     boundary_error, "b v c h w -> (b v) c h w"

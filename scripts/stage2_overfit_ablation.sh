@@ -2,12 +2,13 @@
 set -euo pipefail
 
 # Controlled single-scene ablation for Stage 2.
-# Usage: bash scripts/stage2_overfit_ablation.sh <variant> [steps]
+# Usage: bash scripts/stage2_overfit_ablation.sh <variant> [steps] [boundary_weight] [feedback_scale] [feature_mode]
 
 VARIANT="${1:-joint}"
 STEPS="${2:-20}"
 BOUNDARY_WEIGHT="${3:-0.05}"
 FEEDBACK_SCALE="${4:-1.0}"
+FEATURE_MODE="${5:-residual}"
 SCENE="032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7"
 
 case "${VARIANT}" in
@@ -42,11 +43,19 @@ if ! [[ "${STEPS}" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+if [[ "${FEATURE_MODE}" != residual && "${FEATURE_MODE}" != residual_gradient ]]; then
+  echo "feature_mode must be residual or residual_gradient" >&2
+  exit 2
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 SAFE_BW="${BOUNDARY_WEIGHT//./p}"
 SAFE_FS="${FEEDBACK_SCALE//./p}"
 OUT="outputs/stage2_ablation/${VARIANT}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}"
+if [[ "${FEATURE_MODE}" != residual ]]; then
+  OUT="outputs/stage3_directional/${FEATURE_MODE}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}"
+fi
 EXTRA_OVERRIDES=()
 if [[ "${VARIANT}" == loss_only || "${VARIANT}" == joint ]]; then
   EXTRA_OVERRIDES+=("loss.boundary.weight=${BOUNDARY_WEIGHT}")
@@ -80,6 +89,7 @@ CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=dl3dv \
   model.encoder.train_max_refine=1 \
   model.encoder.use_semantic_boundary_feedback="${FEEDBACK}" \
   model.encoder.semantic_boundary_feedback_scale="${FEEDBACK_SCALE}" \
+  model.encoder.semantic_boundary_feature_mode="${FEATURE_MODE}" \
   "${EXTRA_OVERRIDES[@]}" \
   train.depth_smooth_loss_weight=0. \
   train.print_log_every_n_steps=1 \
