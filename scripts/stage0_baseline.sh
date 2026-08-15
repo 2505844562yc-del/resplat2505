@@ -54,6 +54,7 @@ python -m src.main +experiment=dl3dv \
   dataset.image_shape='[256,448]' \
   model.encoder.num_refine="${REFINE}" \
   checkpointing.pretrained_model="${CHECKPOINT}" \
+  checkpointing.no_strict_load=true \
   wandb.mode=disabled \
   output_dir="${OUT}" \
   2>&1 | tee "${OUT}/run.log"
