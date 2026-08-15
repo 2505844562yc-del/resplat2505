@@ -293,7 +293,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     1 if self.cfg.init_gaussian_multiple == 4
                     else self.cfg.latent_downsample ** 2
                 )
-                self.update_boundary_error_proj = nn.Sequential(
+                # Keep ablation data sampling identical: module construction must
+                # not advance the global RNG used by the iterable dataset.
+                with torch.random.fork_rng(devices=[]):
+                    self.update_boundary_error_proj = nn.Sequential(
                     nn.Linear(boundary_channels, resnet_channels),
                     nn.LayerNorm(resnet_channels),
                 )
