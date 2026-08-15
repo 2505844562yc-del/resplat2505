@@ -55,6 +55,7 @@ from ..evaluation.depth_metrics import compute_depth_errors
 from ..loss.loss_depth_smooth import get_smooth_loss
 
 from .types import Gaussians
+from .semantic_boundary import balanced_boundary_l1, rgb_to_soft_boundary
 
 try:
     from bitsandbytes.optim import AdamW8bit
@@ -1102,6 +1103,42 @@ class ModelWrapper(LightningModule):
             self.test_step_outputs[f"lpips"].append(
                 compute_lpips(rgb_gt, rgb).mean().item()
             )
+
+            if "boundary" in batch["target"]:
+                target_boundary = batch["target"]["boundary"].to(rgb.dtype)
+                confidence = batch["target"]["boundary_confidence"].to(rgb.dtype)
+                gate = torch.where(
+                    confidence >= self.encoder.cfg.semantic_boundary_confidence_floor,
+                    confidence,
+                    torch.zeros_like(confidence),
+                )
+                predicted_boundary = rgb_to_soft_boundary(
+                    rgb, self.encoder.cfg.semantic_boundary_gain
+                )
+                boundary_l1 = balanced_boundary_l1(
+                    predicted_boundary, target_boundary, gate
+                )
+                trusted = gate > 0
+                predicted_positive = predicted_boundary >= 0.5
+                target_positive = target_boundary >= 0.5
+                true_positive = (
+                    predicted_positive & target_positive & trusted
+                ).sum().float()
+                false_positive = (
+                    predicted_positive & ~target_positive & trusted
+                ).sum().float()
+                false_negative = (
+                    ~predicted_positive & target_positive & trusted
+                ).sum().float()
+                boundary_f1 = (2 * true_positive) / (
+                    2 * true_positive + false_positive + false_negative
+                ).clamp_min(1)
+                self.test_step_outputs.setdefault("boundary_l1", []).append(
+                    boundary_l1.item()
+                )
+                self.test_step_outputs.setdefault("boundary_f1", []).append(
+                    boundary_f1.item()
+                )
 
             # compute depth metrics
             if pred_depths is not None and depth_gt is not None:
