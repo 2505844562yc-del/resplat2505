@@ -6,6 +6,8 @@ set -euo pipefail
 
 VARIANT="${1:-joint}"
 STEPS="${2:-20}"
+BOUNDARY_WEIGHT="${3:-0.05}"
+FEEDBACK_SCALE="${4:-1.0}"
 SCENE="032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7"
 
 case "${VARIANT}" in
@@ -42,7 +44,13 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
-OUT="outputs/stage2_ablation/${VARIANT}_${STEPS}steps"
+SAFE_BW="${BOUNDARY_WEIGHT//./p}"
+SAFE_FS="${FEEDBACK_SCALE//./p}"
+OUT="outputs/stage2_ablation/${VARIANT}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}"
+EXTRA_OVERRIDES=()
+if [[ "${VARIANT}" == loss_only || "${VARIANT}" == joint ]]; then
+  EXTRA_OVERRIDES+=("loss.boundary.weight=${BOUNDARY_WEIGHT}")
+fi
 
 CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=dl3dv \
   "loss=${LOSSES}" \
@@ -71,6 +79,8 @@ CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=dl3dv \
   model.encoder.train_min_refine=1 \
   model.encoder.train_max_refine=1 \
   model.encoder.use_semantic_boundary_feedback="${FEEDBACK}" \
+  model.encoder.semantic_boundary_feedback_scale="${FEEDBACK_SCALE}" \
+  "${EXTRA_OVERRIDES[@]}" \
   train.depth_smooth_loss_weight=0. \
   train.print_log_every_n_steps=1 \
   optimizer.lr=1e-4 \

@@ -107,6 +107,7 @@ class EncoderReSplatCfg:
     use_semantic_boundary_feedback: bool
     semantic_boundary_gain: float
     semantic_boundary_confidence_floor: float
+    semantic_boundary_feedback_scale: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -954,7 +955,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     boundary_error, "(b v) c h w -> b (v h w) c", b=b, v=v
                 )
                 input_render_error = input_render_error + (
-                    self.update_boundary_error_proj(boundary_error)
+                    self.cfg.semantic_boundary_feedback_scale
+                    * self.update_boundary_error_proj(boundary_error)
                 )
 
             # stop gradient for last predictions
