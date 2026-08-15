@@ -31,6 +31,9 @@ use_index_to_load_chunk: false
 
 no_mix_test_set: true
 load_depth: false
+load_boundaries: false
+boundary_roots: null
+boundary_missing_policy: error
 center_pose: false
 
 opencv_pose_format: false

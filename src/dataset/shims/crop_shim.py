@@ -105,12 +105,38 @@ def rescale_and_crop(
     return center_crop(images, intrinsics, shape, depths=depths)
 
 
+def rescale_and_crop_auxiliary(
+    values: Float[Tensor, "*#batch c h w"],
+    shape: tuple[int, int],
+) -> Float[Tensor, "*#batch c h_out w_out"]:
+    """Apply the RGB crop geometry to a dense supervision map."""
+    *batch, channels, h_in, w_in = values.shape
+    h_out, w_out = shape
+    assert h_out <= h_in and w_out <= w_in
+
+    scale_factor = max(h_out / h_in, w_out / w_in)
+    h_scaled = round(h_in * scale_factor)
+    w_scaled = round(w_in * scale_factor)
+    row = (h_scaled - h_out) // 2
+    col = (w_scaled - w_out) // 2
+
+    values = values.reshape(-1, channels, h_in, w_in)
+    values = F.interpolate(
+        values,
+        size=(h_scaled, w_scaled),
+        mode="bilinear",
+        align_corners=False,
+    )
+    values = values[..., row : row + h_out, col : col + w_out]
+    return values.reshape(*batch, channels, h_out, w_out)
+
+
 def apply_crop_shim_to_views(views: AnyViews, shape: tuple[int, int]) -> AnyViews:
     depths = views["depth"] if "depth" in views else None
     if depths is not None:
         images, intrinsics, depths = rescale_and_crop(views["image"], views["intrinsics"], shape,
                                                       depths=depths)
-        return {
+        cropped = {
             **views,
             "image": images,
             "depth": depths,
@@ -119,11 +145,16 @@ def apply_crop_shim_to_views(views: AnyViews, shape: tuple[int, int]) -> AnyView
     else:
         images, intrinsics = rescale_and_crop(views["image"], views["intrinsics"], shape,
                                               depths=None)
-        return {
+        cropped = {
             **views,
             "image": images,
             "intrinsics": intrinsics,
         }
+
+    for key in ("boundary", "boundary_confidence"):
+        if key in views:
+            cropped[key] = rescale_and_crop_auxiliary(views[key], shape)
+    return cropped
 
 
 def apply_crop_shim(example: AnyExample, shape: tuple[int, int]) -> AnyExample:

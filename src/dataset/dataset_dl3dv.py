@@ -78,6 +78,10 @@ class DatasetDL3DVCfg(DatasetCfgCommon):
     # test on train set
     test_on_train: bool = False
 
+    load_boundaries: bool = False
+    boundary_roots: Optional[list[Path]] = None
+    boundary_missing_policy: Literal["error", "skip"] = "error"
+
 class DatasetDL3DV(IterableDataset):
     cfg: DatasetDL3DVCfg
     stage: Stage
@@ -295,6 +299,41 @@ class DatasetDL3DV(IterableDataset):
                         # some data might be corrupted
                         continue
 
+                    if self.cfg.load_boundaries:
+                        context_boundary_data = self.load_boundary_maps(
+                            scene,
+                            context_indices,
+                            tuple(context_images.shape[-2:]),
+                        )
+                        target_boundary_data = self.load_boundary_maps(
+                            scene,
+                            target_indices,
+                            tuple(target_images.shape[-2:]),
+                        )
+                        if (
+                            context_boundary_data is None
+                            or target_boundary_data is None
+                        ):
+                            continue
+                        context_boundaries, context_boundary_confidence = (
+                            context_boundary_data
+                        )
+                        target_boundaries, target_boundary_confidence = (
+                            target_boundary_data
+                        )
+                        if self.cfg.load_remain_context:
+                            remain_boundary_data = self.load_boundary_maps(
+                                scene,
+                                remaining_indices,
+                                tuple(remain_context_images.shape[-2:]),
+                            )
+                            if remain_boundary_data is None:
+                                continue
+                            (
+                                remain_boundaries,
+                                remain_boundary_confidence,
+                            ) = remain_boundary_data
+
                     # Skip the example if the images don't have the right shape.
                     if self.cfg.mix_re10k and 'dl3dv' not in scene:
                         if self.cfg.highres:
@@ -409,6 +448,16 @@ class DatasetDL3DV(IterableDataset):
                         "scene": scene,
                     }
 
+                    if self.cfg.load_boundaries:
+                        example_out["context"].update({
+                            "boundary": context_boundaries,
+                            "boundary_confidence": context_boundary_confidence,
+                        })
+                        example_out["target"].update({
+                            "boundary": target_boundaries,
+                            "boundary_confidence": target_boundary_confidence,
+                        })
+
                     if self.cfg.load_remain_context:
                         example_out.update({
                             "context_remain": {
@@ -421,6 +470,13 @@ class DatasetDL3DV(IterableDataset):
                             }
                             }
                         )
+                        if self.cfg.load_boundaries:
+                            example_out["context_remain"].update({
+                                "boundary": remain_boundaries,
+                                "boundary_confidence": (
+                                    remain_boundary_confidence
+                                ),
+                            })
 
                     if self.stage == "train" and self.cfg.augment:
                         example_out = apply_augmentation_shim(example_out)
@@ -486,6 +542,98 @@ class DatasetDL3DV(IterableDataset):
             image = Image.open(BytesIO(image.numpy().tobytes()))
             torch_images.append(self.to_tensor(image))
         return torch.stack(torch_images)
+
+    def load_boundary_maps(
+        self,
+        scene: str,
+        indices: Tensor,
+        expected_shape: tuple[int, int],
+    ) -> Optional[tuple[Tensor, Tensor]]:
+        """Load offline boundary supervision without modifying DL3DV chunks.
+
+        Expected layout is boundary_root/stage/scene/frame_index.npz.
+        Each file must contain boundary and confidence arrays.
+        """
+        roots = self.cfg.boundary_roots
+        if not roots:
+            raise ValueError(
+                "load_boundaries=true requires at least one boundary_roots entry"
+            )
+
+        boundaries = []
+        confidences = []
+        for index in indices.tolist():
+            relative_path = (
+                Path(self.data_stage) / scene / f"{int(index):06d}.npz"
+            )
+            path = next(
+                (
+                    Path(root) / relative_path
+                    for root in roots
+                    if (Path(root) / relative_path).is_file()
+                ),
+                None,
+            )
+            if path is None:
+                if self.cfg.boundary_missing_policy == "skip":
+                    return None
+                searched = ", ".join(
+                    str(Path(root) / relative_path) for root in roots
+                )
+                raise FileNotFoundError(
+                    f"Missing boundary sidecar for {scene} frame {index}. "
+                    f"Searched: {searched}"
+                )
+
+            with np.load(path, allow_pickle=False) as sidecar:
+                missing = {"boundary", "confidence"} - set(sidecar.files)
+                if missing:
+                    raise KeyError(
+                        f"{path} is missing arrays: {sorted(missing)}"
+                    )
+                boundary = self.convert_boundary_map(
+                    sidecar["boundary"], path, "boundary"
+                )
+                confidence = self.convert_boundary_map(
+                    sidecar["confidence"], path, "confidence"
+                )
+            if boundary.shape != confidence.shape:
+                raise ValueError(
+                    f"Boundary/confidence shape mismatch in {path}: "
+                    f"{boundary.shape} vs {confidence.shape}"
+                )
+            if tuple(boundary.shape[-2:]) != expected_shape:
+                raise ValueError(
+                    f"Boundary shape mismatch in {path}: expected "
+                    f"{expected_shape}, got {tuple(boundary.shape[-2:])}"
+                )
+            boundaries.append(boundary)
+            confidences.append(confidence)
+
+        return torch.stack(boundaries), torch.stack(confidences)
+
+    @staticmethod
+    def convert_boundary_map(
+        array: np.ndarray,
+        path: Path,
+        name: str,
+    ) -> Tensor:
+        if array.ndim == 2:
+            array = array[None]
+        if array.ndim != 3 or array.shape[0] != 1:
+            raise ValueError(
+                f"{path}:{name} must have shape [H,W] or [1,H,W], "
+                f"got {array.shape}"
+            )
+        is_integer = np.issubdtype(array.dtype, np.integer)
+        tensor = torch.from_numpy(np.array(array, copy=True)).float()
+        if is_integer:
+            tensor /= float(np.iinfo(array.dtype).max)
+        if not torch.isfinite(tensor).all():
+            raise ValueError(f"{path}:{name} contains non-finite values")
+        if tensor.min() < 0 or tensor.max() > 1:
+            raise ValueError(f"{path}:{name} must lie in [0, 1]")
+        return tensor
 
     def get_bound(
         self,
