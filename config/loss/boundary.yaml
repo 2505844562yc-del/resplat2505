@@ -1,0 +1,4 @@
+boundary:
+  weight: 0.05
+  gain: 5.0
+  confidence_floor: 0.5

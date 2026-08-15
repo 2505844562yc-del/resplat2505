@@ -28,6 +28,7 @@ from .point_transformer.layer import PlainPointTransformer, PointLinearWrapper, 
 
 
 from .layer import ResNetFeatureWarpper
+from ..semantic_boundary import confidence_gated_boundary_residual
 
 @dataclass
 class EncoderReSplatCfg:
@@ -103,6 +104,9 @@ class EncoderReSplatCfg:
 
     # Render error multi-view attention
     render_error_mv_attn_blocks: int
+    use_semantic_boundary_feedback: bool
+    semantic_boundary_gain: float
+    semantic_boundary_confidence_floor: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -283,6 +287,18 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     nn.Linear(3 * self.cfg.latent_downsample ** 2, resnet_channels),
                     nn.LayerNorm(resnet_channels)
                 )
+
+            if self.cfg.use_semantic_boundary_feedback:
+                boundary_channels = (
+                    1 if self.cfg.init_gaussian_multiple == 4
+                    else self.cfg.latent_downsample ** 2
+                )
+                self.update_boundary_error_proj = nn.Sequential(
+                    nn.Linear(boundary_channels, resnet_channels),
+                    nn.LayerNorm(resnet_channels),
+                )
+                nn.init.zeros_(self.update_boundary_error_proj[0].weight)
+                nn.init.zeros_(self.update_boundary_error_proj[0].bias)
 
             out_channels = num_gaussian_parameters + 3
 
@@ -913,6 +929,30 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
             rgb_render_error = self.update_rgb_error_proj(rgb_render_error)
             input_render_error = input_render_error + rgb_render_error
+
+            if self.cfg.use_semantic_boundary_feedback:
+                if "boundary" not in context or "boundary_confidence" not in context:
+                    raise KeyError("Semantic feedback requires context boundary maps")
+                boundary_error = confidence_gated_boundary_residual(
+                    input_render.color,
+                    context["boundary"],
+                    context["boundary_confidence"],
+                    gain=self.cfg.semantic_boundary_gain,
+                    confidence_floor=self.cfg.semantic_boundary_confidence_floor,
+                )
+                boundary_error = rearrange(
+                    boundary_error, "b v c h w -> (b v) c h w"
+                )
+                if self.cfg.init_gaussian_multiple != 4:
+                    boundary_error = F.pixel_unshuffle(
+                        boundary_error, downscale_factor=self.cfg.latent_downsample
+                    )
+                boundary_error = rearrange(
+                    boundary_error, "(b v) c h w -> b (v h w) c", b=b, v=v
+                )
+                input_render_error = input_render_error + (
+                    self.update_boundary_error_proj(boundary_error)
+                )
 
             # stop gradient for last predictions
             prev_gaussians_concat = torch.cat((

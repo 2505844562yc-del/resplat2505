@@ -86,6 +86,9 @@ refine_local_knn_cross_view_radius: 3
 
 # Render error multi-view attention
 render_error_mv_attn_blocks: 1
+use_semantic_boundary_feedback: false
+semantic_boundary_gain: 5.0
+semantic_boundary_confidence_floor: 0.5
 
 # AMP
 use_amp: true

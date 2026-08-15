@@ -214,6 +214,13 @@ class ModelWrapper(LightningModule):
                     "far": batch["context"]["far"][:, start:end],
                     "index": batch["context"]["index"][:, start:end],
                 }
+                if "boundary" in batch["context"]:
+                    curr_window_input["boundary"] = (
+                        batch["context"]["boundary"][:, start:end]
+                    )
+                    curr_window_input["boundary_confidence"] = (
+                        batch["context"]["boundary_confidence"][:, start:end]
+                    )
 
                 if self.encoder.cfg.num_refine > 0:
                     with torch.no_grad():
