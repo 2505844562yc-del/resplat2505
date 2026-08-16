@@ -41,6 +41,7 @@ from ..multiview_boundary import (
     signed_boundary_consensus_feature,
 )
 from ..semantic_routing import apply_semantic_parameter_routes
+from ..semantic_selective_refinement import apply_selective_geometry_residual
 
 @dataclass
 class EncoderReSplatCfg:
@@ -148,6 +149,11 @@ class EncoderReSplatCfg:
     semantic_parameter_route_hidden_channels: int
     semantic_parameter_route_gain: float
     semantic_parameter_route_appearance: bool
+    use_semantic_selective_refinement: bool
+    semantic_selective_hidden_channels: int
+    semantic_selective_gate_bias: float
+    semantic_selective_gain: float
+    semantic_selective_radius: int
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -429,6 +435,26 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             out_channels = num_gaussian_parameters + 3
 
             channels = self.state_channels
+
+            if self.cfg.use_semantic_selective_refinement:
+                selective_hidden = self.cfg.semantic_selective_hidden_channels
+                selective_repeat = (
+                    self.cfg.init_gaussian_multiple
+                    if not self.cfg.refine_same_num_points
+                    else 1
+                )
+                with torch.random.fork_rng(devices=[]):
+                    self.update_semantic_selective_head = nn.Sequential(
+                        nn.Linear(channels + resnet_channels, selective_hidden),
+                        nn.GELU(),
+                        nn.Linear(selective_hidden, 7 * selective_repeat),
+                    )
+                nn.init.zeros_(self.update_semantic_selective_head[-1].weight)
+                nn.init.zeros_(self.update_semantic_selective_head[-1].bias)
+                with torch.no_grad():
+                    self.update_semantic_selective_head[-1].bias[
+                        :selective_repeat
+                    ].fill_(self.cfg.semantic_selective_gate_bias)
 
             # Update module (kNN attention)
             self.update_module = nn.Sequential(
@@ -972,6 +998,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
         for i in range(num_refine):
             semantic_parameter_routes = None
+            semantic_selective_features = None
+            semantic_selective_active = None
             input0 = rearrange(input_render.color, "b v c h w -> (b v) c h w")
             gt_input = context["image"]
             input1 = rearrange(gt_input, "b v c h w -> (b v) c h w")
@@ -1252,6 +1280,42 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                                 path,
                             )
                         self._logged_multiview_displacement_stats = True
+                if self.cfg.use_semantic_selective_refinement:
+                    trusted_boundary = (
+                        (context["boundary"] >= 0.5)
+                        & (
+                            context["boundary_confidence"]
+                            >= self.cfg.semantic_boundary_confidence_floor
+                        )
+                    ).to(boundary_error.dtype)
+                    trusted_boundary = rearrange(
+                        trusted_boundary, "b v c h w -> (b v) c h w"
+                    )
+                    radius = self.cfg.semantic_selective_radius
+                    semantic_selective_active = F.max_pool2d(
+                        trusted_boundary,
+                        kernel_size=2 * radius + 1,
+                        stride=1,
+                        padding=radius,
+                    )
+                    if self.cfg.init_gaussian_multiple != 4:
+                        semantic_selective_active = F.pixel_unshuffle(
+                            semantic_selective_active,
+                            downscale_factor=self.cfg.latent_downsample,
+                        ).amax(dim=1, keepdim=True)
+                    semantic_selective_active = rearrange(
+                        semantic_selective_active,
+                        "(b v) 1 h w -> b (v h w) 1",
+                        b=b,
+                        v=v,
+                    ) > 0
+                    if not hasattr(self, "_logged_semantic_selective_stats"):
+                        print(
+                            "semantic selective refinement: "
+                            f"active={semantic_selective_active.float().mean().item():.4f}"
+                        )
+                        self._logged_semantic_selective_stats = True
+
                 boundary_error = rearrange(
                     boundary_error, "b v c h w -> (b v) c h w"
                 )
@@ -1319,6 +1383,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                                 boundary_feedback
                             )
                         )
+                    if self.cfg.use_semantic_selective_refinement:
+                        semantic_selective_features = boundary_feedback
 
             # stop gradient for last predictions
             prev_gaussians_concat = torch.cat((
@@ -1417,6 +1483,16 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
                 # delta gaussian head
                 delta_gaussians = self.update_head(tmp_state)
+                semantic_selective_output = None
+                if semantic_selective_features is not None:
+                    flat_semantic_features = rearrange(
+                        semantic_selective_features, "b n c -> (b n) c"
+                    )
+                    semantic_selective_output = (
+                        self.update_semantic_selective_head(
+                            torch.cat((tmp_state, flat_semantic_features), dim=-1)
+                        )
+                    )
 
             # update gaussian parameters
             delta_gaussians = rearrange(delta_gaussians, "(b n) c -> b n c", b=b)
@@ -1432,6 +1508,18 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 (3 * repeat, 3 * repeat, 4 * repeat, 1 * repeat, sh_dim * repeat), dim=-1
             )
 
+            semantic_selective_gate = None
+            semantic_selective_corrections = None
+            if semantic_selective_output is not None:
+                semantic_selective_output = rearrange(
+                    semantic_selective_output, "(b n) c -> b n c", b=b
+                )
+                semantic_selective_gate, semantic_selective_corrections = (
+                    semantic_selective_output.split(
+                        (repeat, 6 * repeat), dim=-1
+                    )
+                )
+
             if self.cfg.init_gaussian_multiple > 1 and not self.cfg.refine_same_num_points:
                 delta_means = rearrange(delta_means, "b n (c k) -> b (n k) c", k=repeat)
                 delta_scales = rearrange(delta_scales, "b n (c k) -> b (n k) c", k=repeat)
@@ -1444,6 +1532,33 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                             repeat, dim=1
                         )
                     )
+                if semantic_selective_corrections is not None:
+                    semantic_selective_gate = rearrange(
+                        semantic_selective_gate,
+                        "b n k -> b (n k) 1",
+                        k=repeat,
+                    )
+                    semantic_selective_corrections = rearrange(
+                        semantic_selective_corrections,
+                        "b n (c k) -> b (n k) c",
+                        c=6,
+                        k=repeat,
+                    )
+                    semantic_selective_active = (
+                        semantic_selective_active.repeat_interleave(
+                            repeat, dim=1
+                        )
+                    )
+
+            if semantic_selective_corrections is not None:
+                delta_means, delta_scales = apply_selective_geometry_residual(
+                    delta_means,
+                    delta_scales,
+                    semantic_selective_corrections,
+                    torch.sigmoid(semantic_selective_gate),
+                    semantic_selective_active,
+                    gain=self.cfg.semantic_selective_gain,
+                )
 
             if semantic_parameter_routes is not None:
                 (

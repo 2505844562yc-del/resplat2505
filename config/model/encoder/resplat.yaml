@@ -109,6 +109,11 @@ use_semantic_parameter_routing: false
 semantic_parameter_route_hidden_channels: 64
 semantic_parameter_route_gain: 0.5
 semantic_parameter_route_appearance: true
+use_semantic_selective_refinement: false
+semantic_selective_hidden_channels: 64
+semantic_selective_gate_bias: -2.0
+semantic_selective_gain: 0.5
+semantic_selective_radius: 2
 
 # AMP
 use_amp: true
