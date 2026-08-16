@@ -167,6 +167,7 @@ if [[ "${USE_SEMANTIC_INIT}" == true ]]; then
     "model.encoder.semantic_init_proximity_radius=4"
     "model.encoder.semantic_init_depth_gain=0.1"
     "model.encoder.semantic_init_scale_gain=0.5"
+    "model.encoder.semantic_init_auxiliary_loss_weight=0.25"
   )
 fi
 

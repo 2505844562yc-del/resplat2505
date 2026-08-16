@@ -165,6 +165,7 @@ class EncoderReSplatCfg:
     semantic_init_proximity_radius: int
     semantic_init_depth_gain: float
     semantic_init_scale_gain: float
+    semantic_init_auxiliary_loss_weight: float
 
     # AMP (automatic mixed precision)
     use_amp: bool

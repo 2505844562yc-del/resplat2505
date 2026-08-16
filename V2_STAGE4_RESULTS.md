@@ -51,3 +51,20 @@ The implementation passed syntax checks and all 46 unit tests. A two-step
 reported distinct initial and final RGB and boundary scores. These two-step
 values validate the pipeline only and are not evidence for or against the
 method.
+
+## First 20-step diagnostic
+
+The first controlled run produced nearly identical results. Semantic init
+changed initial PSNR by about `-0.0013 dB` and initial Boundary F1 by only about
+`+0.00014`; the adapter residual was nonzero (`~0.0024`), so this was not a
+broken-gradient failure. The final `init_v1` Boundary F1 was the best of the four
+modes, but only by roughly `0.001`, which is too small to claim a useful trend.
+
+This diagnosis exposed a supervision-path problem: the initial geometry was
+optimized only through the recurrent updater and final render. The updater can
+absorb or attenuate small initializer changes. The one permitted diagnostic
+revision therefore adds a weighted, direct loss on the initial render
+(`semantic_init_auxiliary_loss_weight=0.25`). It reuses the selected RGB and
+boundary losses, while target boundaries remain supervision only and never
+enter the initializer input. A second 20-step comparison is required before any
+50-step promotion.

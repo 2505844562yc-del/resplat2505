@@ -316,8 +316,22 @@ class ModelWrapper(LightningModule):
                 gaussians = gaussians["gaussians"]
 
         supervise_intermediate_depth = False
+        semantic_init_output = None
 
         if self.encoder.cfg.num_refine > 0:
+            if (
+                self.encoder.cfg.use_semantic_gaussian_init
+                and self.encoder.cfg.semantic_init_auxiliary_loss_weight > 0
+            ):
+                semantic_init_output = self.decoder.forward(
+                    gaussians,
+                    batch["target"]["extrinsics"],
+                    batch["target"]["intrinsics"],
+                    batch["target"]["near"],
+                    batch["target"]["far"],
+                    (h, w),
+                    depth_mode=None,
+                )
             refine_output = self.encoder.forward_update(
                 batch["context"],
                 batch["target"],
@@ -329,20 +343,6 @@ class ModelWrapper(LightningModule):
 
             render_output = refine_output['render']
             gaussian_output = refine_output['gaussian']
-
-            if self.encoder.cfg.num_refine == 0:
-                init_output = self.decoder.forward(
-                    gaussians,
-                    batch["target"]["extrinsics"],
-                    batch["target"]["intrinsics"],
-                    batch["target"]["near"],
-                    batch["target"]["far"],
-                    (h, w),
-                    depth_mode=None,
-                )
-
-                render_output.insert(0, init_output)
-                gaussian_output.insert(0, gaussians)
 
             render_input_views = refine_output['render_input']
 
@@ -455,6 +455,42 @@ class ModelWrapper(LightningModule):
                             )
 
                     total_loss = total_loss + curr_loss_weight * loss
+
+            # V2 semantic initialization needs a direct learning signal. Without
+            # this term its gradient is filtered through the recurrent updater,
+            # which the 20-step diagnostic showed can almost entirely compensate
+            # for the new initial geometry. The target view is used only here as
+            # supervision; it is never fed to the initializer.
+            if semantic_init_output is not None:
+                init_weight = self.encoder.cfg.semantic_init_auxiliary_loss_weight
+                init_psnr = compute_psnr(
+                    rearrange(target_gt, "b v c h w -> (b v) c h w"),
+                    rearrange(
+                        semantic_init_output.color, "b v c h w -> (b v) c h w"
+                    ),
+                )
+                self.log("train/semantic_init_psnr", init_psnr.mean())
+                for loss_fn in self.losses:
+                    if loss_fn.name == "mse":
+                        init_loss = loss_fn.forward(
+                            semantic_init_output,
+                            batch,
+                            None,
+                            self.global_step,
+                            clamp_large_error=self.train_cfg.train_ignore_large_loss,
+                            valid_depth_mask=valid_depth_mask,
+                        )
+                    else:
+                        init_loss = loss_fn.forward(
+                            semantic_init_output,
+                            batch,
+                            None,
+                            self.global_step,
+                            valid_depth_mask=valid_depth_mask,
+                            half_res_lpips=self.train_cfg.half_res_lpips_loss,
+                        )
+                    self.log(f"loss/semantic_init_{loss_fn.name}", init_loss)
+                    total_loss = total_loss + init_weight * init_loss
 
             # loss on input views
             if self.train_cfg.loss_on_input_views:
