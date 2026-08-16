@@ -91,3 +91,64 @@ code and commits remain reproducible, but the next development step must inspect
 actual depth/scale correction magnitude and spatial localization before deciding
 whether to revise the parameterization or stop this V2 branch. Running longer
 without that evidence would spend GPU time without answering the failure cause.
+
+## Parameter-path diagnosis
+
+The added boundary/background instrumentation found two concrete failures.
+First, the depth residual was exactly zero because the small exponent was
+computed in BF16: corrections around `1e-3`, multiplied by the depth gain and a
+`~0.119` gate, made `exp(x)` round to exactly one. Geometry application now runs
+in FP32, protected by a BF16 regression test. At step 10 this restored a mean
+relative depth change of `1.23e-4`.
+
+Second, neither correction was meaningfully localized. Boundary/background
+relative depth changes were `1.285e-4 / 1.219e-4`, and scale changes were
+`3.436e-4 / 3.541e-4`. The learned gate had become an almost global adjustment.
+The effective geometry gate is therefore corrected to:
+
+```text
+effective_gate = learned_gate * trusted_boundary_proximity
+```
+
+This makes background Gaussians an exact fallback to ReSplat and restricts the
+new geometry residual to the intended semantic boundary band. This is a causal
+repair based on measured behavior, not a gain/weight sweep.
+
+Once proximity provides an exact background fallback, the original conservative
+gate bias of `-2` (initial sigmoid gate `0.119`) unnecessarily suppresses the
+already localized boundary correction. The gate bias is set to zero (initial
+gate `0.5`). Zero-projected residuals still guarantee exact identity at
+initialization; only the learning rate of influence inside the trusted boundary
+band changes.
+
+## Final localized-gate screening
+
+With FP32 geometry, exact background fallback, direct initial-render loss, and
+an initial learned gate of `0.5`, step-10 corrections behaved as designed:
+
+- boundary relative depth change: `3.545e-4`;
+- boundary raw-scale change: `3.009e-4`;
+- background depth and scale change: exactly zero.
+
+Nevertheless, the five-sample 20-step evaluation remained negative/noise-level:
+
+| metric | baseline | final localized init | delta |
+|---|---:|---:|---:|
+| initial PSNR | 26.68553 | 26.68490 | -0.00063 |
+| initial LPIPS | 0.151628 | 0.151629 | +0.000001 |
+| initial Boundary F1 | 0.139394 | 0.139334 | -0.000060 |
+| final PSNR | 26.80463 | 26.80021 | -0.00442 |
+| final Boundary F1 | 0.139705 | 0.139317 | -0.000388 |
+
+This cleanly separates an implementation failure from a method failure: the
+module now changes only the intended Gaussians, but a class-agnostic boundary
+map states *where* a discontinuity may exist and does not state which side is in
+front or the sign of a depth correction. Free signed depth/scale prediction is
+therefore underconstrained at this training horizon. The current design remains
+archived as a reproducible negative result and is not promoted to 50 steps.
+
+The next design should add a directional geometric prior (or region identity)
+rather than merely increasing gains or loss weights. A boundary-footprint
+constraint is the preferred low-cost continuation because it can discourage
+Gaussians from crossing a trusted semantic boundary without guessing a signed
+foreground/background depth displacement.

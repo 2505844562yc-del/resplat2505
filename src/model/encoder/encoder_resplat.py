@@ -739,6 +739,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 semantic_features = rearrange(
                     semantic_features, "b v c h w -> (b v) c h w"
                 )
+                semantic_proximity_grid = F.interpolate(
+                    semantic_features[:, 2:3],
+                    size=(h, w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
                 tmp_feature_grid = rearrange(
                     tmp_feature, "(bv h w) c -> bv c h w", h=h, w=w
                 )
@@ -872,6 +878,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
         semantic_geometry_corrections = None
         semantic_geometry_gate = None
+        semantic_geometry_support = None
         if semantic_geometry_output is not None:
             semantic_geometry_output = rearrange(
                 semantic_geometry_output,
@@ -883,6 +890,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             )
             semantic_geometry_gate = rearrange(
                 semantic_gate,
+                "(b v) 1 h w -> b v 1 h w",
+                b=b,
+                v=v,
+            )
+            semantic_geometry_support = rearrange(
+                semantic_proximity_grid,
                 "(b v) 1 h w -> b v 1 h w",
                 b=b,
                 v=v,
@@ -919,14 +932,40 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     b=b,
                     v=v,
                 )
+                semantic_geometry_support = F.interpolate(
+                    rearrange(
+                        semantic_geometry_support, "b v c h w -> (b v) c h w"
+                    ),
+                    scale_factor=r,
+                    mode="nearest",
+                )
+                semantic_geometry_support = rearrange(
+                    semantic_geometry_support,
+                    "(b v) 1 h w -> b v (h w) 1",
+                    b=b,
+                    v=v,
+                )
         elif semantic_geometry_output is not None:
             semantic_geometry_corrections = semantic_geometry_output
             semantic_geometry_gate = rearrange(
                 semantic_geometry_gate,
                 "b v 1 h w -> b v (h w) 1",
             )
+            semantic_geometry_support = rearrange(
+                semantic_geometry_support,
+                "b v 1 h w -> b v (h w) 1",
+            )
 
         if semantic_geometry_corrections is not None:
+            depths_before_semantic = depths
+            scales_before_semantic = scales
+            # A learned gate alone became nearly spatially uniform in the V2-4
+            # diagnostic. Enforce the intended contract: semantic geometry may
+            # act only inside the trusted boundary proximity band, while the
+            # learned gate still controls its strength within that band.
+            semantic_geometry_gate = (
+                semantic_geometry_gate * semantic_geometry_support.clamp(0, 1)
+            )
             depths, scales = apply_semantic_initial_geometry(
                 depths,
                 scales,
@@ -935,6 +974,49 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 depth_gain=self.cfg.semantic_init_depth_gain,
                 scale_gain=self.cfg.semantic_init_scale_gain,
             )
+            depth_relative_delta = (
+                (depths - depths_before_semantic).abs()
+                / depths_before_semantic.abs().clamp_min(1e-6)
+            ).squeeze(-1)
+            scale_absolute_delta = (scales - scales_before_semantic).abs().mean(-1, keepdim=True)
+            support_mask = semantic_geometry_support >= 0.25
+            background_mask = semantic_geometry_support <= 1e-6
+
+            def masked_mean(value, mask):
+                expanded_mask = mask.expand_as(value)
+                return value.masked_select(expanded_mask).mean() if expanded_mask.any() else value.new_zeros(())
+
+            self.semantic_init_diagnostics = {
+                "gate_mean": semantic_geometry_gate.mean().detach(),
+                "depth_relative_delta_all": depth_relative_delta.mean().detach(),
+                "depth_relative_delta_boundary": masked_mean(
+                    depth_relative_delta, support_mask
+                ).detach(),
+                "depth_relative_delta_background": masked_mean(
+                    depth_relative_delta, background_mask
+                ).detach(),
+                "scale_absolute_delta_all": scale_absolute_delta.mean().detach(),
+                "scale_absolute_delta_boundary": masked_mean(
+                    scale_absolute_delta, support_mask
+                ).detach(),
+                "scale_absolute_delta_background": masked_mean(
+                    scale_absolute_delta, background_mask
+                ).detach(),
+                "boundary_support_fraction": support_mask.float().mean().detach(),
+            }
+            if self.training and global_step % 10 == 0:
+                values = self.semantic_init_diagnostics
+                print(
+                    "semantic init geometry: "
+                    f"depth(all/boundary/bg)="
+                    f"{values['depth_relative_delta_all'].item():.7f}/"
+                    f"{values['depth_relative_delta_boundary'].item():.7f}/"
+                    f"{values['depth_relative_delta_background'].item():.7f}, "
+                    f"scale(all/boundary/bg)="
+                    f"{values['scale_absolute_delta_all'].item():.7f}/"
+                    f"{values['scale_absolute_delta_boundary'].item():.7f}/"
+                    f"{values['scale_absolute_delta_background'].item():.7f}"
+                )
 
         opacities = opacities_raw.sigmoid()  # [B, V, H*W*K, 1]
 

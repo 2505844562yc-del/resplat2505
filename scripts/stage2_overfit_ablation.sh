@@ -163,7 +163,7 @@ if [[ "${USE_SEMANTIC_INIT}" == true ]]; then
   EXTRA_OVERRIDES+=(
     "model.encoder.use_semantic_gaussian_init=true"
     "model.encoder.semantic_init_hidden_channels=32"
-    "model.encoder.semantic_init_gate_bias=-2.0"
+    "model.encoder.semantic_init_gate_bias=0.0"
     "model.encoder.semantic_init_proximity_radius=4"
     "model.encoder.semantic_init_depth_gain=0.1"
     "model.encoder.semantic_init_scale_gain=0.5"

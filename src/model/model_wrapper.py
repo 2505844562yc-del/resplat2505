@@ -686,6 +686,10 @@ class ModelWrapper(LightningModule):
 
         self.log("loss/total", total_loss)
 
+        if hasattr(self.encoder, "semantic_init_diagnostics"):
+            for name, value in self.encoder.semantic_init_diagnostics.items():
+                self.log(f"semantic_init/{name}", value)
+
         if (
             self.global_rank == 0
             and self.global_step % self.train_cfg.print_log_every_n_steps == 0

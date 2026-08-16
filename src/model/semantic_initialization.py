@@ -110,13 +110,22 @@ def apply_semantic_initial_geometry(
         raise ValueError("corrections/gate must have shapes [..., 4] and [..., 1]")
     if depth_gain < 0 or scale_gain < 0:
         raise ValueError("geometry gains must be non-negative")
-    gate = gate.clamp(0, 1)
-    depth_correction = corrections[..., 0:1]
-    scale_correction = corrections[..., 1:4]
-    corrected_depths = depths * torch.exp(
-        depth_gain * gate.unsqueeze(-1) * torch.tanh(depth_correction).unsqueeze(-1)
+    # The semantic head commonly runs under BF16 autocast. Its zero-initialized
+    # corrections are initially around 1e-3; after gain and gating the exponent
+    # can be around 1e-5, which BF16 rounds away (exp(x) becomes exactly 1).
+    # Geometry application must therefore happen in FP32.
+    depths_fp32 = depths.float()
+    scales_fp32 = raw_scales.float()
+    gate_fp32 = gate.float().clamp(0, 1)
+    corrections_fp32 = corrections.float()
+    depth_correction = corrections_fp32[..., 0:1]
+    scale_correction = corrections_fp32[..., 1:4]
+    corrected_depths = depths_fp32 * torch.exp(
+        depth_gain
+        * gate_fp32.unsqueeze(-1)
+        * torch.tanh(depth_correction).unsqueeze(-1)
     )
-    corrected_scales = raw_scales + (
-        scale_gain * gate * torch.tanh(scale_correction)
+    corrected_scales = scales_fp32 + (
+        scale_gain * gate_fp32 * torch.tanh(scale_correction)
     )
     return corrected_depths, corrected_scales

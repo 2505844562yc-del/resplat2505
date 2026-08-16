@@ -75,6 +75,24 @@ class SemanticGeometryAdapterTest(unittest.TestCase):
 
 
 class SemanticInitialGeometryTest(unittest.TestCase):
+    def test_small_bfloat16_depth_correction_survives_in_fp32(self):
+        depths = torch.ones(1, 1, 1, 1, 1, dtype=torch.bfloat16)
+        scales = torch.zeros(1, 1, 1, 3, dtype=torch.bfloat16)
+        corrections = torch.full((1, 1, 1, 4), 1e-3, dtype=torch.bfloat16)
+        gate = torch.full((1, 1, 1, 1), 0.119, dtype=torch.bfloat16)
+
+        corrected_depths, _ = apply_semantic_initial_geometry(
+            depths,
+            scales,
+            corrections,
+            gate,
+            depth_gain=0.1,
+            scale_gain=0.5,
+        )
+
+        self.assertEqual(corrected_depths.dtype, torch.float32)
+        self.assertGreater(corrected_depths.item(), 1.0)
+
     def test_zero_correction_is_exact_identity(self):
         depths = torch.ones(1, 2, 3, 1, 1)
         scales = torch.randn(1, 2, 3, 3)
