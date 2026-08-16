@@ -68,3 +68,26 @@ revision therefore adds a weighted, direct loss on the initial render
 boundary losses, while target boundaries remain supervision only and never
 enter the initializer input. A second 20-step comparison is required before any
 50-step promotion.
+
+## Revised 20-step result
+
+Five fixed evaluation samples were used. Higher is better for PSNR/SSIM/F1;
+lower is better for LPIPS/L1.
+
+| mode | init PSNR | init LPIPS | init boundary F1 | final PSNR | final boundary F1 |
+|---|---:|---:|---:|---:|---:|
+| baseline | 26.68553 | 0.151628 | 0.139394 | 26.80463 | 0.139705 |
+| V1 | 26.68553 | 0.151628 | 0.139394 | 26.80455 | 0.140479 |
+| init + direct supervision | 26.68487 | 0.151584 | 0.139468 | 26.80010 | 0.139742 |
+| init + V1 + direct supervision | 26.68434 | 0.151623 | 0.139516 | 26.80554 | 0.140777 |
+
+The direct loss increased the learned adapter residual from roughly `0.0024`
+to `0.0035`, but did not create a meaningful step-0 improvement. The best full
+model improves final Boundary F1 over V1 by only `0.00030`, while initial PSNR
+is slightly worse. This fails the predefined 20-step promotion criterion.
+
+Therefore this exact adapter/head design is **not promoted to 50 steps**. The
+code and commits remain reproducible, but the next development step must inspect
+actual depth/scale correction magnitude and spatial localization before deciding
+whether to revise the parameterization or stop this V2 branch. Running longer
+without that evidence would spend GPU time without answering the failure cause.
