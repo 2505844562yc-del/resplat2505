@@ -4,6 +4,7 @@ import torch
 
 from src.model.multiview_boundary import (
     multiview_boundary_consensus_confidence,
+    signed_boundary_consensus_feature,
 )
 
 
@@ -97,6 +98,22 @@ class MultiViewBoundaryConsensusTest(unittest.TestCase):
                 self.extrinsics,
                 self.intrinsics,
                 depth_relative_tolerance=0,
+            )
+
+    def test_signed_consensus_feature_separates_support(self):
+        boundary = torch.tensor([[[[[1.0, 1.0, 0.0]]]]])
+        confidence = torch.tensor([[[[[0.8, 0.6, 1.0]]]]])
+        consensus = torch.tensor([[[[[1.0, 0.0, 1.0]]]]])
+        feature = signed_boundary_consensus_feature(
+            boundary, confidence, consensus
+        )
+        expected = torch.tensor([[[[[0.8, -0.6, 0.0]]]]])
+        self.assertTrue(torch.allclose(feature, expected))
+
+    def test_signed_consensus_feature_rejects_shape_mismatch(self):
+        with self.assertRaises(ValueError):
+            signed_boundary_consensus_feature(
+                self.boundary, self.confidence[..., :-1], self.boundary
             )
 
 

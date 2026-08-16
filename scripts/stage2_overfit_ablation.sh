@@ -49,8 +49,9 @@ if ! [[ "${STEPS}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 if [[ "${FEATURE_MODE}" != residual && "${FEATURE_MODE}" != residual_gradient \
-      && "${FEATURE_MODE}" != residual_alignment ]]; then
-  echo "feature_mode must be residual, residual_gradient, or residual_alignment" >&2
+      && "${FEATURE_MODE}" != residual_alignment \
+      && "${FEATURE_MODE}" != residual_alignment_consensus ]]; then
+  echo "feature_mode must be residual, residual_gradient, residual_alignment, or residual_alignment_consensus" >&2
   exit 2
 fi
 
@@ -72,6 +73,8 @@ if [[ "${FEATURE_MODE}" == residual_gradient ]]; then
   OUT="outputs/stage3_directional/${FEATURE_MODE}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}"
 elif [[ "${FEATURE_MODE}" == residual_alignment ]]; then
   OUT="outputs/stage4_alignment/${FEATURE_MODE}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
+elif [[ "${FEATURE_MODE}" == residual_alignment_consensus ]]; then
+  OUT="outputs/stage7_dual_stream/${FEATURE_MODE}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
 fi
 if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then
   SAFE_BLEND="${CONSENSUS_BLEND//./p}"

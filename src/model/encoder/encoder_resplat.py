@@ -29,7 +29,10 @@ from .point_transformer.layer import PlainPointTransformer, PointLinearWrapper, 
 
 from .layer import ResNetFeatureWarpper
 from ..semantic_boundary import confidence_gated_boundary_features
-from ..multiview_boundary import multiview_boundary_consensus_confidence
+from ..multiview_boundary import (
+    multiview_boundary_consensus_confidence,
+    signed_boundary_consensus_feature,
+)
 
 @dataclass
 class EncoderReSplatCfg:
@@ -110,7 +113,10 @@ class EncoderReSplatCfg:
     semantic_boundary_confidence_floor: float
     semantic_boundary_feedback_scale: float
     semantic_boundary_feature_mode: Literal[
-        "residual", "residual_gradient", "residual_alignment"
+        "residual",
+        "residual_gradient",
+        "residual_alignment",
+        "residual_alignment_consensus",
     ]
     semantic_boundary_alignment_radius: int
     semantic_boundary_alignment_sigma: float
@@ -301,9 +307,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 )
 
             if self.cfg.use_semantic_boundary_feedback:
-                semantic_channels = (
-                    1 if self.cfg.semantic_boundary_feature_mode == "residual" else 3
-                )
+                semantic_channels = {
+                    "residual": 1,
+                    "residual_gradient": 3,
+                    "residual_alignment": 3,
+                    "residual_alignment_consensus": 4,
+                }[self.cfg.semantic_boundary_feature_mode]
                 boundary_channels = (
                     semantic_channels
                     if self.cfg.init_gaussian_multiple == 4
@@ -953,9 +962,16 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 if "boundary" not in context or "boundary_confidence" not in context:
                     raise KeyError("Semantic feedback requires context boundary maps")
                 boundary_confidence = context["boundary_confidence"]
-                if self.cfg.use_multiview_boundary_consensus:
+                explicit_consensus_channel = (
+                    self.cfg.semantic_boundary_feature_mode
+                    == "residual_alignment_consensus"
+                )
+                if (
+                    self.cfg.use_multiview_boundary_consensus
+                    or explicit_consensus_channel
+                ):
                     with torch.no_grad():
-                        boundary_confidence, boundary_consensus = (
+                        consensus_confidence, boundary_consensus = (
                             multiview_boundary_consensus_confidence(
                                 context["boundary"],
                                 boundary_confidence,
@@ -972,6 +988,11 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                                 blend=self.cfg.multiview_boundary_blend,
                             )
                         )
+                    # Stage 6 uses consensus to gate the original feedback.
+                    # Stage 7A instead preserves that feedback and exposes
+                    # consensus as an independent structural observation.
+                    if not explicit_consensus_channel:
+                        boundary_confidence = consensus_confidence
                     if self.training and not hasattr(
                         self, "_logged_multiview_boundary_stats"
                     ):
@@ -997,10 +1018,23 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     boundary_confidence,
                     gain=self.cfg.semantic_boundary_gain,
                     confidence_floor=self.cfg.semantic_boundary_confidence_floor,
-                    mode=self.cfg.semantic_boundary_feature_mode,
+                    mode=(
+                        "residual_alignment"
+                        if explicit_consensus_channel
+                        else self.cfg.semantic_boundary_feature_mode
+                    ),
                     alignment_radius=self.cfg.semantic_boundary_alignment_radius,
                     alignment_sigma=self.cfg.semantic_boundary_alignment_sigma,
                 )
+                if explicit_consensus_channel:
+                    signed_consensus = signed_boundary_consensus_feature(
+                        context["boundary"],
+                        context["boundary_confidence"],
+                        boundary_consensus,
+                    )
+                    boundary_error = torch.cat(
+                        (boundary_error, signed_consensus), dim=2
+                    )
                 boundary_error = rearrange(
                     boundary_error, "b v c h w -> (b v) c h w"
                 )

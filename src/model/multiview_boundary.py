@@ -5,6 +5,15 @@ import torch.nn.functional as F
 from torch import Tensor
 
 
+def signed_boundary_consensus_feature(
+    boundary: Tensor, confidence: Tensor, consensus: Tensor
+) -> Tensor:
+    """Encode supported boundaries as positive and unsupported ones as negative."""
+    if confidence.shape != boundary.shape or consensus.shape != boundary.shape:
+        raise ValueError("boundary, confidence, and consensus must have equal shapes")
+    return (2.0 * consensus - 1.0) * boundary * confidence
+
+
 def _validate_inputs(
     boundary: Tensor,
     confidence: Tensor,
