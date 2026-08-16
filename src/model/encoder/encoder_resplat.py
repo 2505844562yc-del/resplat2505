@@ -40,6 +40,7 @@ from ..multiview_boundary import (
     semantic_boundary_source_mask,
     signed_boundary_consensus_feature,
 )
+from ..semantic_routing import apply_semantic_parameter_routes
 
 @dataclass
 class EncoderReSplatCfg:
@@ -143,6 +144,10 @@ class EncoderReSplatCfg:
     multiview_boundary_displacement_radius: int
     multiview_boundary_displacement_source_radius: int
     multiview_boundary_displacement_diagnostic_path: Optional[str]
+    use_semantic_parameter_routing: bool
+    semantic_parameter_route_hidden_channels: int
+    semantic_parameter_route_gain: float
+    semantic_parameter_route_appearance: bool
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -402,6 +407,24 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 else:
                     nn.init.zeros_(self.update_boundary_error_proj[0].weight)
                     nn.init.zeros_(self.update_boundary_error_proj[0].bias)
+
+                if self.cfg.use_semantic_parameter_routing:
+                    route_hidden = self.cfg.semantic_parameter_route_hidden_channels
+                    route_channels = (
+                        2 if self.cfg.semantic_parameter_route_appearance else 1
+                    )
+                    with torch.random.fork_rng(devices=[]):
+                        self.update_semantic_parameter_route_head = nn.Sequential(
+                            nn.Linear(resnet_channels, route_hidden),
+                            nn.GELU(),
+                            nn.Linear(route_hidden, route_channels),
+                        )
+                    nn.init.zeros_(
+                        self.update_semantic_parameter_route_head[-1].weight
+                    )
+                    nn.init.zeros_(
+                        self.update_semantic_parameter_route_head[-1].bias
+                    )
 
             out_channels = num_gaussian_parameters + 3
 
@@ -948,6 +971,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         cached_knn_idx = None
 
         for i in range(num_refine):
+            semantic_parameter_routes = None
             input0 = rearrange(input_render.color, "b v c h w -> (b v) c h w")
             gt_input = context["image"]
             input1 = rearrange(gt_input, "b v c h w -> (b v) c h w")
@@ -1282,10 +1306,19 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         * structure_feedback
                     )
                 else:
+                    boundary_feedback = self.update_boundary_error_proj(
+                        boundary_error
+                    )
                     input_render_error = input_render_error + (
                         self.cfg.semantic_boundary_feedback_scale
-                        * self.update_boundary_error_proj(boundary_error)
+                        * boundary_feedback
                     )
+                    if self.cfg.use_semantic_parameter_routing:
+                        semantic_parameter_routes = (
+                            self.update_semantic_parameter_route_head(
+                                boundary_feedback
+                            )
+                        )
 
             # stop gradient for last predictions
             prev_gaussians_concat = torch.cat((
@@ -1405,6 +1438,29 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 delta_rotations = rearrange(delta_rotations, "b n (c k) -> b (n k) c", k=repeat)
                 delta_opacities = rearrange(delta_opacities, "b n (c k) -> b (n k) c", k=repeat)
                 delta_shs = rearrange(delta_shs, "b n (c k) -> b (n k) c", k=repeat)
+                if semantic_parameter_routes is not None:
+                    semantic_parameter_routes = (
+                        semantic_parameter_routes.repeat_interleave(
+                            repeat, dim=1
+                        )
+                    )
+
+            if semantic_parameter_routes is not None:
+                (
+                    delta_means,
+                    delta_scales,
+                    delta_rotations,
+                    delta_opacities,
+                    delta_shs,
+                ) = apply_semantic_parameter_routes(
+                    delta_means,
+                    delta_scales,
+                    delta_rotations,
+                    delta_opacities,
+                    delta_shs,
+                    semantic_parameter_routes,
+                    gain=self.cfg.semantic_parameter_route_gain,
+                )
 
             prev_means = (prev_means + delta_means)
 

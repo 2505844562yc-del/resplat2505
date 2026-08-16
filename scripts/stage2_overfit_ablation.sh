@@ -15,6 +15,8 @@ USE_MULTIVIEW_CONSENSUS="${8:-false}"
 CONSENSUS_BLEND="${9:-0.5}"
 GATE_BOUNDARY_LOSS="${10:-false}"
 DISPLACEMENT_DIAGNOSTIC_PATH="${11:-null}"
+USE_PARAMETER_ROUTING="${12:-false}"
+ROUTE_APPEARANCE="${13:-true}"
 SCENE="032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7"
 
 case "${VARIANT}" in
@@ -60,7 +62,7 @@ if [[ "${FEATURE_MODE}" != residual && "${FEATURE_MODE}" != residual_gradient \
   exit 2
 fi
 
-for value in "${USE_MULTIVIEW_CONSENSUS}" "${GATE_BOUNDARY_LOSS}"; do
+for value in "${USE_MULTIVIEW_CONSENSUS}" "${GATE_BOUNDARY_LOSS}" "${USE_PARAMETER_ROUTING}" "${ROUTE_APPEARANCE}"; do
   if [[ "${value}" != true && "${value}" != false ]]; then
     echo "multi-view flags must be true or false" >&2
     exit 2
@@ -86,6 +88,13 @@ elif [[ "${FEATURE_MODE}" == residual_alignment_consensus \
 elif [[ "${FEATURE_MODE}" == residual_alignment_displacement ]]; then
   OUT="outputs/stage8_displacement/${FEATURE_MODE}_focused_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
 fi
+if [[ "${USE_PARAMETER_ROUTING}" == true ]]; then
+  ROUTE_NAME="geometry_appearance"
+  if [[ "${ROUTE_APPEARANCE}" == false ]]; then
+    ROUTE_NAME="geometry_only"
+  fi
+  OUT="outputs/stage9_parameter_routing/${FEATURE_MODE}_${ROUTE_NAME}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
+fi
 if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then
   SAFE_BLEND="${CONSENSUS_BLEND//./p}"
   OUT="outputs/stage6_consensus/normalized_feedback_${STEPS}steps_blend${SAFE_BLEND}"
@@ -109,6 +118,14 @@ if [[ "${FEATURE_MODE}" == residual_alignment_displacement ]]; then
     "model.encoder.multiview_boundary_displacement_radius=4"
     "model.encoder.multiview_boundary_displacement_source_radius=4"
     "model.encoder.multiview_boundary_displacement_diagnostic_path=${DISPLACEMENT_DIAGNOSTIC_PATH}"
+  )
+fi
+if [[ "${USE_PARAMETER_ROUTING}" == true ]]; then
+  EXTRA_OVERRIDES+=(
+    "model.encoder.use_semantic_parameter_routing=true"
+    "model.encoder.semantic_parameter_route_hidden_channels=64"
+    "model.encoder.semantic_parameter_route_gain=0.5"
+    "model.encoder.semantic_parameter_route_appearance=${ROUTE_APPEARANCE}"
   )
 fi
 

@@ -105,6 +105,10 @@ semantic_structure_ramp_steps: 10
 multiview_boundary_displacement_radius: 4
 multiview_boundary_displacement_source_radius: 4
 multiview_boundary_displacement_diagnostic_path: null
+use_semantic_parameter_routing: false
+semantic_parameter_route_hidden_channels: 64
+semantic_parameter_route_gain: 0.5
+semantic_parameter_route_appearance: true
 
 # AMP
 use_amp: true
