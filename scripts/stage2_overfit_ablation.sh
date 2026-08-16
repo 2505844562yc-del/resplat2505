@@ -19,6 +19,7 @@ USE_PARAMETER_ROUTING="${12:-false}"
 ROUTE_APPEARANCE="${13:-true}"
 USE_SELECTIVE_REFINEMENT="${14:-false}"
 USE_SEMANTIC_INIT="${15:-false}"
+OUTPUT_TAG="${16:-}"
 SCENE="032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7"
 
 case "${VARIANT}" in
@@ -42,8 +43,18 @@ case "${VARIANT}" in
     LOAD_BOUNDARIES=true
     FEEDBACK=true
     ;;
+  init_only)
+    LOSSES='[mse]'
+    LOAD_BOUNDARIES=true
+    FEEDBACK=false
+    ;;
+  init_v1)
+    LOSSES='[mse,boundary]'
+    LOAD_BOUNDARIES=true
+    FEEDBACK=true
+    ;;
   *)
-    echo "variant must be baseline, loss_only, feedback_only, or joint" >&2
+    echo "variant must be baseline, loss_only, feedback_only, joint, init_only, or init_v1" >&2
     exit 2
     ;;
 esac
@@ -107,8 +118,11 @@ if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then
   SAFE_BLEND="${CONSENSUS_BLEND//./p}"
   OUT="outputs/stage6_consensus/normalized_feedback_${STEPS}steps_blend${SAFE_BLEND}"
 fi
+if [[ -n "${OUTPUT_TAG}" ]]; then
+  OUT="outputs/v2_ablation/${OUTPUT_TAG}_${STEPS}steps"
+fi
 EXTRA_OVERRIDES=()
-if [[ "${VARIANT}" == loss_only || "${VARIANT}" == joint ]]; then
+if [[ "${VARIANT}" == loss_only || "${VARIANT}" == joint || "${VARIANT}" == init_v1 ]]; then
   EXTRA_OVERRIDES+=("loss.boundary.weight=${BOUNDARY_WEIGHT}")
 fi
 if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then

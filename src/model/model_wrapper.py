@@ -737,6 +737,8 @@ class ModelWrapper(LightningModule):
 
         pred_depths = None
         depth_gt = None
+        initial_gaussians_for_eval = None
+        initial_output = None
 
         # save input views for visualization
         if self.test_cfg.save_input_images:
@@ -809,6 +811,8 @@ class ModelWrapper(LightningModule):
                     rotations=torch.cat([g.rotations for g in all_gaussians], dim=1),
                     rotations_unnorm=torch.cat([g.rotations_unnorm for g in all_gaussians], dim=1),
                 )
+                if self.test_cfg.compute_scores and self.encoder.cfg.num_refine > 0:
+                    initial_gaussians_for_eval = gaussians
 
                 # global refine after simply combining local window gaussians
                 if self.encoder.cfg.num_refine > 0:
@@ -879,6 +883,9 @@ class ModelWrapper(LightningModule):
                     if "condition_features" in gaussians:
                         condition_features = gaussians["condition_features"]
                     gaussians = gaussians["gaussians"]
+
+                if self.test_cfg.compute_scores and self.encoder.cfg.num_refine > 0:
+                    initial_gaussians_for_eval = gaussians
 
                 # refine
                 if self.encoder.cfg.num_refine > 0:
@@ -1006,6 +1013,28 @@ class ModelWrapper(LightningModule):
                         depth_mode=None,
                     )
 
+        # Render the pre-refinement Gaussians with exactly the same cameras.  This
+        # is deliberately outside the benchmarked decoder block: it is a V2
+        # diagnostic and must not change the reported inference time.
+        if initial_gaussians_for_eval is not None:
+            if self.test_cfg.render_input_views:
+                initial_intrinsics = batch["context"]["intrinsics"]
+                initial_near = batch["context"]["near"]
+                initial_far = batch["context"]["far"]
+            else:
+                initial_intrinsics = batch["target"]["intrinsics"]
+                initial_near = batch["target"]["near"]
+                initial_far = batch["target"]["far"]
+            initial_output = self.decoder.forward(
+                initial_gaussians_for_eval,
+                camera_poses,
+                initial_intrinsics,
+                initial_near,
+                initial_far,
+                (h, w),
+                depth_mode=None,
+            )
+
         (scene,) = batch["scene"]
         self.test_cfg.output_path = os.path.join(get_cfg()["output_dir"], "metrics")
         path = Path(get_cfg()["output_dir"])
@@ -1107,6 +1136,24 @@ class ModelWrapper(LightningModule):
                 compute_lpips(rgb_gt, rgb).mean().item()
             )
 
+            if initial_output is not None:
+                init_rgb = initial_output.color[0]
+                init_psnr = compute_psnr(rgb_gt, init_rgb).mean().item()
+                init_ssim = compute_ssim(rgb_gt, init_rgb).mean().item()
+                init_lpips = compute_lpips(rgb_gt, init_rgb).mean().item()
+                self.test_step_outputs.setdefault("init_psnr", []).append(init_psnr)
+                self.test_step_outputs.setdefault("init_ssim", []).append(init_ssim)
+                self.test_step_outputs.setdefault("init_lpips", []).append(init_lpips)
+                self.test_step_outputs.setdefault("refine_psnr_gain", []).append(
+                    self.test_step_outputs["psnr"][-1] - init_psnr
+                )
+                self.test_step_outputs.setdefault("refine_ssim_gain", []).append(
+                    self.test_step_outputs["ssim"][-1] - init_ssim
+                )
+                self.test_step_outputs.setdefault("refine_lpips_reduction", []).append(
+                    init_lpips - self.test_step_outputs["lpips"][-1]
+                )
+
             if "boundary" in batch["target"]:
                 target_boundary = batch["target"]["boundary"].to(rgb.dtype)
                 confidence = batch["target"]["boundary_confidence"].to(rgb.dtype)
@@ -1142,6 +1189,36 @@ class ModelWrapper(LightningModule):
                 self.test_step_outputs.setdefault("boundary_f1", []).append(
                     boundary_f1.item()
                 )
+
+                if initial_output is not None:
+                    initial_boundary = rgb_to_soft_boundary(
+                        initial_output.color[0],
+                        self.encoder.cfg.semantic_boundary_gain,
+                    )
+                    init_boundary_l1 = balanced_boundary_l1(
+                        initial_boundary, target_boundary, gate
+                    )
+                    init_positive = initial_boundary >= 0.5
+                    init_true_positive = (
+                        init_positive & target_positive & trusted
+                    ).sum().float()
+                    init_false_positive = (
+                        init_positive & ~target_positive & trusted
+                    ).sum().float()
+                    init_false_negative = (
+                        ~init_positive & target_positive & trusted
+                    ).sum().float()
+                    init_boundary_f1 = (2 * init_true_positive) / (
+                        2 * init_true_positive
+                        + init_false_positive
+                        + init_false_negative
+                    ).clamp_min(1)
+                    self.test_step_outputs.setdefault("init_boundary_l1", []).append(
+                        init_boundary_l1.item()
+                    )
+                    self.test_step_outputs.setdefault("init_boundary_f1", []).append(
+                        init_boundary_f1.item()
+                    )
 
             # compute depth metrics
             if pred_depths is not None and depth_gt is not None:
