@@ -98,6 +98,10 @@ multiview_boundary_radius: 2
 multiview_boundary_depth_relative_tolerance: 0.05
 multiview_boundary_min_support_views: 2.0
 multiview_boundary_blend: 1.0
+semantic_structure_hidden_channels: 64
+semantic_structure_gate_bias: -2.0
+semantic_structure_warmup_steps: 5
+semantic_structure_ramp_steps: 10
 
 # AMP
 use_amp: true

@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from src.model.multiview_boundary import (
+    boundary_consensus_reliability_feature,
     multiview_boundary_consensus_confidence,
     signed_boundary_consensus_feature,
 )
@@ -115,6 +116,16 @@ class MultiViewBoundaryConsensusTest(unittest.TestCase):
             signed_boundary_consensus_feature(
                 self.boundary, self.confidence[..., :-1], self.boundary
             )
+
+    def test_reliability_feature_is_non_negative_and_boundary_masked(self):
+        boundary = torch.tensor([[[[[1.0, 1.0, 0.0]]]]])
+        confidence = torch.tensor([[[[[0.8, 0.6, 1.0]]]]])
+        consensus = torch.tensor([[[[[1.0, 0.0, 1.0]]]]])
+        feature = boundary_consensus_reliability_feature(
+            boundary, confidence, consensus
+        )
+        expected = torch.tensor([[[[[0.8, 0.0, 0.0]]]]])
+        self.assertTrue(torch.allclose(feature, expected))
 
 
 if __name__ == "__main__":

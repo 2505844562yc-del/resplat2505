@@ -30,6 +30,7 @@ from .point_transformer.layer import PlainPointTransformer, PointLinearWrapper, 
 from .layer import ResNetFeatureWarpper
 from ..semantic_boundary import confidence_gated_boundary_features
 from ..multiview_boundary import (
+    boundary_consensus_reliability_feature,
     multiview_boundary_consensus_confidence,
     signed_boundary_consensus_feature,
 )
@@ -117,6 +118,9 @@ class EncoderReSplatCfg:
         "residual_gradient",
         "residual_alignment",
         "residual_alignment_consensus",
+        "residual_alignment_consensus_gated",
+        "residual_alignment_consensus_dual",
+        "residual_alignment_consensus_dual_warmup",
     ]
     semantic_boundary_alignment_radius: int
     semantic_boundary_alignment_sigma: float
@@ -125,6 +129,10 @@ class EncoderReSplatCfg:
     multiview_boundary_depth_relative_tolerance: float
     multiview_boundary_min_support_views: float
     multiview_boundary_blend: float
+    semantic_structure_hidden_channels: int
+    semantic_structure_gate_bias: float
+    semantic_structure_warmup_steps: int
+    semantic_structure_ramp_steps: int
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -312,6 +320,9 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     "residual_gradient": 3,
                     "residual_alignment": 3,
                     "residual_alignment_consensus": 4,
+                    "residual_alignment_consensus_gated": 4,
+                    "residual_alignment_consensus_dual": 4,
+                    "residual_alignment_consensus_dual_warmup": 4,
                 }[self.cfg.semantic_boundary_feature_mode]
                 boundary_channels = (
                     semantic_channels
@@ -320,13 +331,64 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 )
                 # Keep ablation data sampling identical: module construction must
                 # not advance the global RNG used by the iterable dataset.
-                with torch.random.fork_rng(devices=[]):
-                    self.update_boundary_error_proj = nn.Sequential(
-                    nn.Linear(boundary_channels, resnet_channels),
-                    nn.LayerNorm(resnet_channels),
+                gated_structure = (
+                    self.cfg.semantic_boundary_feature_mode
+                    in {
+                        "residual_alignment_consensus_gated",
+                        "residual_alignment_consensus_dual",
+                        "residual_alignment_consensus_dual_warmup",
+                    }
                 )
-                nn.init.zeros_(self.update_boundary_error_proj[0].weight)
-                nn.init.zeros_(self.update_boundary_error_proj[0].bias)
+                dual_structure = (
+                    self.cfg.semantic_boundary_feature_mode
+                    in {
+                        "residual_alignment_consensus_dual",
+                        "residual_alignment_consensus_dual_warmup",
+                    }
+                )
+                with torch.random.fork_rng(devices=[]):
+                    if gated_structure:
+                        hidden = self.cfg.semantic_structure_hidden_channels
+                        self.update_boundary_structure_encoder = nn.Sequential(
+                            nn.Linear(boundary_channels, hidden),
+                            nn.GELU(),
+                            nn.Linear(hidden, resnet_channels),
+                            nn.LayerNorm(resnet_channels),
+                        )
+                        self.update_boundary_gate = nn.Sequential(
+                            nn.Linear(2 * resnet_channels, hidden),
+                            nn.GELU(),
+                            nn.Linear(hidden, 1),
+                        )
+                        if dual_structure:
+                            base_boundary_channels = (
+                                3
+                                if self.cfg.init_gaussian_multiple == 4
+                                else 3 * self.cfg.latent_downsample ** 2
+                            )
+                            self.update_boundary_error_proj = nn.Sequential(
+                                nn.Linear(base_boundary_channels, resnet_channels),
+                                nn.LayerNorm(resnet_channels),
+                            )
+                    else:
+                        self.update_boundary_error_proj = nn.Sequential(
+                            nn.Linear(boundary_channels, resnet_channels),
+                            nn.LayerNorm(resnet_channels),
+                        )
+                if gated_structure:
+                    nn.init.zeros_(self.update_boundary_structure_encoder[2].weight)
+                    nn.init.zeros_(self.update_boundary_structure_encoder[2].bias)
+                    nn.init.zeros_(self.update_boundary_gate[2].weight)
+                    nn.init.constant_(
+                        self.update_boundary_gate[2].bias,
+                        self.cfg.semantic_structure_gate_bias,
+                    )
+                    if dual_structure:
+                        nn.init.zeros_(self.update_boundary_error_proj[0].weight)
+                        nn.init.zeros_(self.update_boundary_error_proj[0].bias)
+                else:
+                    nn.init.zeros_(self.update_boundary_error_proj[0].weight)
+                    nn.init.zeros_(self.update_boundary_error_proj[0].bias)
 
             out_channels = num_gaussian_parameters + 3
 
@@ -393,6 +455,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         scene_names: Optional[list] = None,
         renderer=None,
     ):
+        self._semantic_global_step = global_step
         device = context["image"].device
         b, v, _, h, w = context["image"].shape
 
@@ -964,7 +1027,31 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 boundary_confidence = context["boundary_confidence"]
                 explicit_consensus_channel = (
                     self.cfg.semantic_boundary_feature_mode
-                    == "residual_alignment_consensus"
+                    in {
+                        "residual_alignment_consensus",
+                        "residual_alignment_consensus_gated",
+                        "residual_alignment_consensus_dual",
+                        "residual_alignment_consensus_dual_warmup",
+                    }
+                )
+                gated_structure = (
+                    self.cfg.semantic_boundary_feature_mode
+                    in {
+                        "residual_alignment_consensus_gated",
+                        "residual_alignment_consensus_dual",
+                        "residual_alignment_consensus_dual_warmup",
+                    }
+                )
+                dual_structure = (
+                    self.cfg.semantic_boundary_feature_mode
+                    in {
+                        "residual_alignment_consensus_dual",
+                        "residual_alignment_consensus_dual_warmup",
+                    }
+                )
+                warmup_structure = (
+                    self.cfg.semantic_boundary_feature_mode
+                    == "residual_alignment_consensus_dual_warmup"
                 )
                 if (
                     self.cfg.use_multiview_boundary_consensus
@@ -1027,13 +1114,20 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     alignment_sigma=self.cfg.semantic_boundary_alignment_sigma,
                 )
                 if explicit_consensus_channel:
-                    signed_consensus = signed_boundary_consensus_feature(
-                        context["boundary"],
-                        context["boundary_confidence"],
-                        boundary_consensus,
-                    )
+                    if gated_structure:
+                        consensus_feature = boundary_consensus_reliability_feature(
+                            context["boundary"],
+                            context["boundary_confidence"],
+                            boundary_consensus,
+                        )
+                    else:
+                        consensus_feature = signed_boundary_consensus_feature(
+                            context["boundary"],
+                            context["boundary_confidence"],
+                            boundary_consensus,
+                        )
                     boundary_error = torch.cat(
-                        (boundary_error, signed_consensus), dim=2
+                        (boundary_error, consensus_feature), dim=2
                     )
                 boundary_error = rearrange(
                     boundary_error, "b v c h w -> (b v) c h w"
@@ -1045,10 +1139,54 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 boundary_error = rearrange(
                     boundary_error, "(b v) c h w -> b (v h w) c", b=b, v=v
                 )
-                input_render_error = input_render_error + (
-                    self.cfg.semantic_boundary_feedback_scale
-                    * self.update_boundary_error_proj(boundary_error)
-                )
+                if gated_structure:
+                    structure_error = self.update_boundary_structure_encoder(
+                        boundary_error
+                    )
+                    structure_gate = torch.sigmoid(
+                        self.update_boundary_gate(
+                            torch.cat(
+                                (input_render_error, structure_error), dim=-1
+                            )
+                        )
+                    )
+                    structure_schedule = 1.0
+                    if warmup_structure and self.training:
+                        ramp_step = (
+                            getattr(self, "_semantic_global_step", 0)
+                            - self.cfg.semantic_structure_warmup_steps
+                        )
+                        structure_schedule = max(
+                            0.0,
+                            min(
+                                1.0,
+                                ramp_step
+                                / max(1, self.cfg.semantic_structure_ramp_steps),
+                            ),
+                        )
+                    structure_feedback = (
+                        structure_schedule * structure_gate * structure_error
+                    )
+                    if dual_structure:
+                        base_channels = (
+                            3
+                            if self.cfg.init_gaussian_multiple == 4
+                            else 3 * self.cfg.latent_downsample ** 2
+                        )
+                        structure_feedback = structure_feedback + (
+                            self.update_boundary_error_proj(
+                                boundary_error[..., :base_channels]
+                            )
+                        )
+                    input_render_error = input_render_error + (
+                        self.cfg.semantic_boundary_feedback_scale
+                        * structure_feedback
+                    )
+                else:
+                    input_render_error = input_render_error + (
+                        self.cfg.semantic_boundary_feedback_scale
+                        * self.update_boundary_error_proj(boundary_error)
+                    )
 
             # stop gradient for last predictions
             prev_gaussians_concat = torch.cat((
