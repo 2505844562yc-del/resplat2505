@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Controlled single-scene ablation for Stage 2.
-# Usage: bash scripts/stage2_overfit_ablation.sh <variant> [steps] [boundary_weight] [feedback_scale] [feature_mode] [alignment_radius] [alignment_sigma]
+# Usage: bash scripts/stage2_overfit_ablation.sh <variant> [steps] [boundary_weight] [feedback_scale] [feature_mode] [alignment_radius] [alignment_sigma] [use_multiview_consensus] [consensus_blend] [gate_boundary_loss]
 
 VARIANT="${1:-joint}"
 STEPS="${2:-20}"
@@ -11,6 +11,9 @@ FEEDBACK_SCALE="${4:-1.0}"
 FEATURE_MODE="${5:-residual}"
 ALIGNMENT_RADIUS="${6:-4}"
 ALIGNMENT_SIGMA="${7:-2.0}"
+USE_MULTIVIEW_CONSENSUS="${8:-false}"
+CONSENSUS_BLEND="${9:-0.5}"
+GATE_BOUNDARY_LOSS="${10:-false}"
 SCENE="032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7"
 
 case "${VARIANT}" in
@@ -51,6 +54,13 @@ if [[ "${FEATURE_MODE}" != residual && "${FEATURE_MODE}" != residual_gradient \
   exit 2
 fi
 
+for value in "${USE_MULTIVIEW_CONSENSUS}" "${GATE_BOUNDARY_LOSS}"; do
+  if [[ "${value}" != true && "${value}" != false ]]; then
+    echo "multi-view flags must be true or false" >&2
+    exit 2
+  fi
+done
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 SAFE_BW="${BOUNDARY_WEIGHT//./p}"
@@ -63,9 +73,23 @@ if [[ "${FEATURE_MODE}" == residual_gradient ]]; then
 elif [[ "${FEATURE_MODE}" == residual_alignment ]]; then
   OUT="outputs/stage4_alignment/${FEATURE_MODE}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
 fi
+if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then
+  SAFE_BLEND="${CONSENSUS_BLEND//./p}"
+  OUT="outputs/stage6_consensus/normalized_feedback_${STEPS}steps_blend${SAFE_BLEND}"
+fi
 EXTRA_OVERRIDES=()
 if [[ "${VARIANT}" == loss_only || "${VARIANT}" == joint ]]; then
   EXTRA_OVERRIDES+=("loss.boundary.weight=${BOUNDARY_WEIGHT}")
+fi
+if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then
+  EXTRA_OVERRIDES+=(
+    "model.encoder.use_multiview_boundary_consensus=true"
+    "model.encoder.multiview_boundary_radius=2"
+    "model.encoder.multiview_boundary_depth_relative_tolerance=0.05"
+    "model.encoder.multiview_boundary_min_support_views=2.0"
+    "model.encoder.multiview_boundary_blend=${CONSENSUS_BLEND}"
+    "loss.boundary.use_multiview_consensus=${GATE_BOUNDARY_LOSS}"
+  )
 fi
 
 CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=dl3dv \

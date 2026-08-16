@@ -29,6 +29,7 @@ from .point_transformer.layer import PlainPointTransformer, PointLinearWrapper, 
 
 from .layer import ResNetFeatureWarpper
 from ..semantic_boundary import confidence_gated_boundary_features
+from ..multiview_boundary import multiview_boundary_consensus_confidence
 
 @dataclass
 class EncoderReSplatCfg:
@@ -113,6 +114,11 @@ class EncoderReSplatCfg:
     ]
     semantic_boundary_alignment_radius: int
     semantic_boundary_alignment_sigma: float
+    use_multiview_boundary_consensus: bool
+    multiview_boundary_radius: int
+    multiview_boundary_depth_relative_tolerance: float
+    multiview_boundary_min_support_views: float
+    multiview_boundary_blend: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -946,10 +952,49 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             if self.cfg.use_semantic_boundary_feedback:
                 if "boundary" not in context or "boundary_confidence" not in context:
                     raise KeyError("Semantic feedback requires context boundary maps")
+                boundary_confidence = context["boundary_confidence"]
+                if self.cfg.use_multiview_boundary_consensus:
+                    with torch.no_grad():
+                        boundary_confidence, boundary_consensus = (
+                            multiview_boundary_consensus_confidence(
+                                context["boundary"],
+                                boundary_confidence,
+                                input_render.depth,
+                                context["extrinsics"],
+                                context["intrinsics"],
+                                radius=self.cfg.multiview_boundary_radius,
+                                depth_relative_tolerance=(
+                                    self.cfg.multiview_boundary_depth_relative_tolerance
+                                ),
+                                min_support_views=(
+                                    self.cfg.multiview_boundary_min_support_views
+                                ),
+                                blend=self.cfg.multiview_boundary_blend,
+                            )
+                        )
+                    if self.training and not hasattr(
+                        self, "_logged_multiview_boundary_stats"
+                    ):
+                        positive = context["boundary"] >= 0.5
+                        supported = boundary_consensus[positive]
+                        mean_support = (
+                            supported.mean().item() if supported.numel() else 0.0
+                        )
+                        supported_fraction = (
+                            (supported >= 0.5).float().mean().item()
+                            if supported.numel()
+                            else 0.0
+                        )
+                        print(
+                            "multi-view boundary consensus: "
+                            f"mean={mean_support:.4f}, "
+                            f">=0.5={supported_fraction:.4f}"
+                        )
+                        self._logged_multiview_boundary_stats = True
                 boundary_error = confidence_gated_boundary_features(
                     input_render.color,
                     context["boundary"],
-                    context["boundary_confidence"],
+                    boundary_confidence,
                     gain=self.cfg.semantic_boundary_gain,
                     confidence_floor=self.cfg.semantic_boundary_confidence_floor,
                     mode=self.cfg.semantic_boundary_feature_mode,
@@ -1181,5 +1226,3 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 def RGB2SH(rgb):
     C0 = 0.28209479177387814
     return (rgb - 0.5) / C0
-
-

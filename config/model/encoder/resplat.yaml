@@ -93,6 +93,11 @@ semantic_boundary_feedback_scale: 1.0
 semantic_boundary_feature_mode: residual
 semantic_boundary_alignment_radius: 4
 semantic_boundary_alignment_sigma: 2.0
+use_multiview_boundary_consensus: false
+multiview_boundary_radius: 2
+multiview_boundary_depth_relative_tolerance: 0.05
+multiview_boundary_min_support_views: 2.0
+multiview_boundary_blend: 1.0
 
 # AMP
 use_amp: true

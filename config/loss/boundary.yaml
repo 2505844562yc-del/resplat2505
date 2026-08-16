@@ -2,3 +2,8 @@ boundary:
   weight: 0.05
   gain: 5.0
   confidence_floor: 0.5
+  use_multiview_consensus: false
+  multiview_radius: 2
+  multiview_depth_relative_tolerance: 0.05
+  multiview_min_support_views: 1.0
+  multiview_blend: 1.0
