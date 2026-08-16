@@ -289,7 +289,10 @@ def train(cfg_dict: DictConfig):
         if cfg.model.encoder.num_refine > 0:
             print('train refine only')
             for name, params in model_wrapper.named_parameters():
-                if 'encoder.update' not in name:
+                trainable = 'encoder.update' in name
+                if cfg.model.encoder.use_semantic_gaussian_init:
+                    trainable = trainable or 'encoder.semantic_init' in name
+                if not trainable:
                     params.requires_grad = False
 
         trainer.fit(model_wrapper, datamodule=data_module, ckpt_path=checkpoint_path)

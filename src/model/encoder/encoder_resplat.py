@@ -42,6 +42,10 @@ from ..multiview_boundary import (
 )
 from ..semantic_routing import apply_semantic_parameter_routes
 from ..semantic_selective_refinement import apply_selective_geometry_residual
+from ..semantic_initialization import (
+    SemanticGeometryAdapter,
+    boundary_proximity_features,
+)
 
 @dataclass
 class EncoderReSplatCfg:
@@ -154,6 +158,10 @@ class EncoderReSplatCfg:
     semantic_selective_gate_bias: float
     semantic_selective_gain: float
     semantic_selective_radius: int
+    use_semantic_gaussian_init: bool
+    semantic_init_hidden_channels: int
+    semantic_init_gate_bias: float
+    semantic_init_proximity_radius: int
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -273,6 +281,16 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         channels = self.cfg.gaussian_regressor_channels
 
         self.proj = nn.Linear(in_channels, channels)
+
+        if self.cfg.use_semantic_gaussian_init:
+            # Preserve controlled-ablation data sampling when the identity
+            # adapter is enabled.
+            with torch.random.fork_rng(devices=[]):
+                self.semantic_init_adapter = SemanticGeometryAdapter(
+                    channels,
+                    hidden_channels=self.cfg.semantic_init_hidden_channels,
+                    gate_bias=self.cfg.semantic_init_gate_bias,
+                )
 
         # Create PT head using factory function (KNN attention)
         self.pt = create_init_point_transformer(self.cfg, channels)
@@ -692,6 +710,37 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         h, w = latent_depth.shape[-2:]
         with torch.amp.autocast(device_type='cuda', enabled=self.cfg.pt_head_amp, dtype=torch.bfloat16):
             tmp_feature = self.proj(rearrange(out, "bv c h w -> (bv h w) c"))
+            if self.cfg.use_semantic_gaussian_init:
+                if "boundary" not in context or "boundary_confidence" not in context:
+                    raise KeyError(
+                        "semantic Gaussian initialization requires context "
+                        "boundary and boundary_confidence"
+                    )
+                semantic_features = boundary_proximity_features(
+                    context["boundary"],
+                    context["boundary_confidence"],
+                    confidence_floor=self.cfg.semantic_boundary_confidence_floor,
+                    max_radius=self.cfg.semantic_init_proximity_radius,
+                )
+                semantic_features = rearrange(
+                    semantic_features, "b v c h w -> (b v) c h w"
+                )
+                tmp_feature_grid = rearrange(
+                    tmp_feature, "(bv h w) c -> bv c h w", h=h, w=w
+                )
+                tmp_feature_grid, semantic_gate, semantic_residual = (
+                    self.semantic_init_adapter(tmp_feature_grid, semantic_features)
+                )
+                tmp_feature = rearrange(
+                    tmp_feature_grid, "bv c h w -> (bv h w) c"
+                )
+                if not hasattr(self, "_logged_semantic_init_stats"):
+                    print(
+                        "semantic Gaussian init adapter: "
+                        f"gate={semantic_gate.mean().item():.4f}, "
+                        f"residual={semantic_residual.abs().mean().item():.6f}"
+                    )
+                    self._logged_semantic_init_stats = True
         # get point cloud
         xy_ray, _ = sample_image_grid((h, w), out.device)
         xy_ray = rearrange(xy_ray, "h w xy -> (h w) () xy")
