@@ -14,6 +14,7 @@ ALIGNMENT_SIGMA="${7:-2.0}"
 USE_MULTIVIEW_CONSENSUS="${8:-false}"
 CONSENSUS_BLEND="${9:-0.5}"
 GATE_BOUNDARY_LOSS="${10:-false}"
+DISPLACEMENT_DIAGNOSTIC_PATH="${11:-null}"
 SCENE="032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7"
 
 case "${VARIANT}" in
@@ -53,7 +54,8 @@ if [[ "${FEATURE_MODE}" != residual && "${FEATURE_MODE}" != residual_gradient \
       && "${FEATURE_MODE}" != residual_alignment_consensus \
       && "${FEATURE_MODE}" != residual_alignment_consensus_gated \
       && "${FEATURE_MODE}" != residual_alignment_consensus_dual \
-      && "${FEATURE_MODE}" != residual_alignment_consensus_dual_warmup ]]; then
+      && "${FEATURE_MODE}" != residual_alignment_consensus_dual_warmup \
+      && "${FEATURE_MODE}" != residual_alignment_displacement ]]; then
   echo "unsupported feature_mode: ${FEATURE_MODE}" >&2
   exit 2
 fi
@@ -81,6 +83,8 @@ elif [[ "${FEATURE_MODE}" == residual_alignment_consensus \
         || "${FEATURE_MODE}" == residual_alignment_consensus_dual \
         || "${FEATURE_MODE}" == residual_alignment_consensus_dual_warmup ]]; then
   OUT="outputs/stage7_dual_stream/${FEATURE_MODE}_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
+elif [[ "${FEATURE_MODE}" == residual_alignment_displacement ]]; then
+  OUT="outputs/stage8_displacement/${FEATURE_MODE}_focused_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
 fi
 if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then
   SAFE_BLEND="${CONSENSUS_BLEND//./p}"
@@ -98,6 +102,13 @@ if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then
     "model.encoder.multiview_boundary_min_support_views=2.0"
     "model.encoder.multiview_boundary_blend=${CONSENSUS_BLEND}"
     "loss.boundary.use_multiview_consensus=${GATE_BOUNDARY_LOSS}"
+  )
+fi
+if [[ "${FEATURE_MODE}" == residual_alignment_displacement ]]; then
+  EXTRA_OVERRIDES+=(
+    "model.encoder.multiview_boundary_displacement_radius=4"
+    "model.encoder.multiview_boundary_displacement_source_radius=4"
+    "model.encoder.multiview_boundary_displacement_diagnostic_path=${DISPLACEMENT_DIAGNOSTIC_PATH}"
   )
 fi
 

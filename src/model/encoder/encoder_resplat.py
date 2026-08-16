@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Optional
 
 import torch
@@ -28,10 +29,15 @@ from .point_transformer.layer import PlainPointTransformer, PointLinearWrapper, 
 
 
 from .layer import ResNetFeatureWarpper
-from ..semantic_boundary import confidence_gated_boundary_features
+from ..semantic_boundary import (
+    confidence_gated_boundary_features,
+    rgb_to_soft_boundary,
+)
 from ..multiview_boundary import (
     boundary_consensus_reliability_feature,
     multiview_boundary_consensus_confidence,
+    multiview_boundary_displacement_candidates,
+    semantic_boundary_source_mask,
     signed_boundary_consensus_feature,
 )
 
@@ -121,6 +127,7 @@ class EncoderReSplatCfg:
         "residual_alignment_consensus_gated",
         "residual_alignment_consensus_dual",
         "residual_alignment_consensus_dual_warmup",
+        "residual_alignment_displacement",
     ]
     semantic_boundary_alignment_radius: int
     semantic_boundary_alignment_sigma: float
@@ -133,6 +140,9 @@ class EncoderReSplatCfg:
     semantic_structure_gate_bias: float
     semantic_structure_warmup_steps: int
     semantic_structure_ramp_steps: int
+    multiview_boundary_displacement_radius: int
+    multiview_boundary_displacement_source_radius: int
+    multiview_boundary_displacement_diagnostic_path: Optional[str]
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -323,6 +333,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     "residual_alignment_consensus_gated": 4,
                     "residual_alignment_consensus_dual": 4,
                     "residual_alignment_consensus_dual_warmup": 4,
+                    "residual_alignment_displacement": 7,
                 }[self.cfg.semantic_boundary_feature_mode]
                 boundary_channels = (
                     semantic_channels
@@ -337,6 +348,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         "residual_alignment_consensus_gated",
                         "residual_alignment_consensus_dual",
                         "residual_alignment_consensus_dual_warmup",
+                        "residual_alignment_displacement",
                     }
                 )
                 dual_structure = (
@@ -344,6 +356,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     in {
                         "residual_alignment_consensus_dual",
                         "residual_alignment_consensus_dual_warmup",
+                        "residual_alignment_displacement",
                     }
                 )
                 with torch.random.fork_rng(devices=[]):
@@ -1034,12 +1047,17 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         "residual_alignment_consensus_dual_warmup",
                     }
                 )
+                displacement_mode = (
+                    self.cfg.semantic_boundary_feature_mode
+                    == "residual_alignment_displacement"
+                )
                 gated_structure = (
                     self.cfg.semantic_boundary_feature_mode
                     in {
                         "residual_alignment_consensus_gated",
                         "residual_alignment_consensus_dual",
                         "residual_alignment_consensus_dual_warmup",
+                        "residual_alignment_displacement",
                     }
                 )
                 dual_structure = (
@@ -1047,6 +1065,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     in {
                         "residual_alignment_consensus_dual",
                         "residual_alignment_consensus_dual_warmup",
+                        "residual_alignment_displacement",
                     }
                 )
                 warmup_structure = (
@@ -1107,7 +1126,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     confidence_floor=self.cfg.semantic_boundary_confidence_floor,
                     mode=(
                         "residual_alignment"
-                        if explicit_consensus_channel
+                        if explicit_consensus_channel or displacement_mode
                         else self.cfg.semantic_boundary_feature_mode
                     ),
                     alignment_radius=self.cfg.semantic_boundary_alignment_radius,
@@ -1129,6 +1148,86 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     boundary_error = torch.cat(
                         (boundary_error, consensus_feature), dim=2
                     )
+                elif displacement_mode:
+                    with torch.no_grad():
+                        rendered_boundary = rgb_to_soft_boundary(
+                            input_render.color,
+                            gain=self.cfg.semantic_boundary_gain,
+                        )
+                        rendered_boundary = semantic_boundary_source_mask(
+                            rendered_boundary,
+                            context["boundary"],
+                            context["boundary_confidence"],
+                            radius=(
+                                self.cfg.multiview_boundary_displacement_source_radius
+                            ),
+                            confidence_floor=(
+                                self.cfg.semantic_boundary_confidence_floor
+                            ),
+                        )
+                        mv_dx, mv_dy, mv_confidence, mv_visibility = (
+                            multiview_boundary_displacement_candidates(
+                                rendered_boundary,
+                                context["boundary"],
+                                context["boundary_confidence"],
+                                input_render.depth,
+                                context["extrinsics"],
+                                context["intrinsics"],
+                                radius=(
+                                    self.cfg.multiview_boundary_displacement_radius
+                                ),
+                                depth_relative_tolerance=(
+                                    self.cfg.multiview_boundary_depth_relative_tolerance
+                                ),
+                            )
+                        )
+                    displacement_radius = float(
+                        self.cfg.multiview_boundary_displacement_radius
+                    )
+                    displacement_features = torch.cat(
+                        (
+                            (mv_dx / displacement_radius).clamp(-1, 1),
+                            (mv_dy / displacement_radius).clamp(-1, 1),
+                            mv_confidence,
+                            mv_visibility,
+                        ),
+                        dim=2,
+                    )
+                    boundary_error = torch.cat(
+                        (boundary_error, displacement_features), dim=2
+                    )
+                    if not hasattr(self, "_logged_multiview_displacement_stats"):
+                        active = rendered_boundary >= 0.1
+                        supported = active & (mv_confidence > 0)
+                        mean_magnitude = torch.sqrt(
+                            mv_dx.square() + mv_dy.square()
+                        )[supported]
+                        print(
+                            "multi-view boundary displacement: "
+                            f"active={active.float().mean().item():.4f}, "
+                            f"supported={supported.float().sum().item() / active.float().sum().clamp_min(1).item():.4f}, "
+                            f"mean_px={mean_magnitude.mean().item() if mean_magnitude.numel() else 0.0:.4f}, "
+                            f"confidence={mv_confidence[supported].mean().item() if supported.any() else 0.0:.4f}, "
+                            f"visibility={mv_visibility[active].mean().item() if active.any() else 0.0:.4f}"
+                        )
+                        diagnostic_path = (
+                            self.cfg.multiview_boundary_displacement_diagnostic_path
+                        )
+                        if diagnostic_path:
+                            path = Path(diagnostic_path)
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            torch.save(
+                                {
+                                    "rendered_boundary": rendered_boundary[0, 0].cpu(),
+                                    "teacher_boundary": context["boundary"][0, 0].cpu(),
+                                    "dx": mv_dx[0, 0].cpu(),
+                                    "dy": mv_dy[0, 0].cpu(),
+                                    "confidence": mv_confidence[0, 0].cpu(),
+                                    "visibility": mv_visibility[0, 0].cpu(),
+                                },
+                                path,
+                            )
+                        self._logged_multiview_displacement_stats = True
                 boundary_error = rearrange(
                     boundary_error, "b v c h w -> (b v) c h w"
                 )

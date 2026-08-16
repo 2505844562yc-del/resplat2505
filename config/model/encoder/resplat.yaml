@@ -102,6 +102,9 @@ semantic_structure_hidden_channels: 64
 semantic_structure_gate_bias: -2.0
 semantic_structure_warmup_steps: 5
 semantic_structure_ramp_steps: 10
+multiview_boundary_displacement_radius: 4
+multiview_boundary_displacement_source_radius: 4
+multiview_boundary_displacement_diagnostic_path: null
 
 # AMP
 use_amp: true
