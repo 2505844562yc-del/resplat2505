@@ -1,5 +1,7 @@
 """Differentiable boundary operators shared by feedback and supervision."""
 
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -16,6 +18,57 @@ def _spatial_gradient(image: Tensor) -> tuple[Tensor, Tensor]:
     grad_y = F.conv2d(padded, sobel_x.transpose(-1, -2))
     shape = (*image.shape[:-3], 1, image.shape[-2], image.shape[-1])
     return grad_x.reshape(shape), grad_y.reshape(shape)
+
+def local_boundary_alignment_vector(
+    predicted_boundary: Tensor,
+    target_boundary: Tensor,
+    confidence: Tensor,
+    radius: int = 4,
+    sigma: float = 2.0,
+) -> tuple[Tensor, Tensor]:
+    """Soft local vector from each predicted edge towards trusted target edges."""
+    if radius < 1:
+        raise ValueError("alignment radius must be positive")
+    if sigma <= 0:
+        raise ValueError("alignment sigma must be positive")
+    if not (predicted_boundary.shape == target_boundary.shape == confidence.shape):
+        raise ValueError("Predicted, target, and confidence shapes must match")
+
+    flat_predicted = predicted_boundary.reshape(
+        -1, 1, predicted_boundary.shape[-2], predicted_boundary.shape[-1]
+    )
+    flat_target = target_boundary.reshape_as(flat_predicted)
+    flat_confidence = confidence.reshape_as(flat_predicted)
+    height, width = flat_predicted.shape[-2:]
+    mass = torch.zeros_like(flat_predicted)
+    x_sum = torch.zeros_like(flat_predicted)
+    y_sum = torch.zeros_like(flat_predicted)
+    reliable_target = flat_target * flat_confidence
+    padded = F.pad(reliable_target, (radius, radius, radius, radius))
+    denominator = 2.0 * sigma * sigma
+
+    for offset_y in range(-radius, radius + 1):
+        for offset_x in range(-radius, radius + 1):
+            distance_sq = float(offset_x * offset_x + offset_y * offset_y)
+            spatial_weight = math.exp(-distance_sq / denominator)
+            shifted = padded[
+                ...,
+                radius + offset_y : radius + offset_y + height,
+                radius + offset_x : radius + offset_x + width,
+            ]
+            weighted = spatial_weight * shifted
+            mass = mass + weighted
+            x_sum = x_sum + weighted * (offset_x / radius)
+            y_sum = y_sum + weighted * (offset_y / radius)
+
+    valid = mass > 1e-6
+    vector_x = torch.where(valid, x_sum / mass.clamp_min(1e-6), torch.zeros_like(mass))
+    vector_y = torch.where(valid, y_sum / mass.clamp_min(1e-6), torch.zeros_like(mass))
+    output_shape = (*predicted_boundary.shape[:-3], 1, height, width)
+    return (
+        (flat_predicted * vector_x).reshape(output_shape),
+        (flat_predicted * vector_y).reshape(output_shape),
+    )
 
 
 def rgb_to_soft_boundary(image: Tensor, gain: float = 5.0) -> Tensor:
@@ -60,6 +113,8 @@ def confidence_gated_boundary_features(
     gain: float = 5.0,
     confidence_floor: float = 0.0,
     mode: str = "residual",
+    alignment_radius: int = 4,
+    alignment_sigma: float = 2.0,
 ) -> Tensor:
     """Build confidence-gated semantic feedback.
 
@@ -76,10 +131,25 @@ def confidence_gated_boundary_features(
     )
     if mode == "residual":
         return residual
-    if mode != "residual_gradient":
-        raise ValueError(f"Unknown semantic boundary feature mode: {mode}")
-    grad_x, grad_y = _spatial_gradient(residual)
-    return torch.cat((residual, grad_x, grad_y), dim=-3)
+    if mode == "residual_gradient":
+        grad_x, grad_y = _spatial_gradient(residual)
+        return torch.cat((residual, grad_x, grad_y), dim=-3)
+    if mode == "residual_alignment":
+        predicted = rgb_to_soft_boundary(rendered_rgb, gain)
+        gate = torch.where(
+            confidence >= confidence_floor,
+            confidence,
+            torch.zeros_like(confidence),
+        )
+        vector_x, vector_y = local_boundary_alignment_vector(
+            predicted,
+            target_boundary,
+            gate,
+            radius=alignment_radius,
+            sigma=alignment_sigma,
+        )
+        return torch.cat((residual, vector_x, vector_y), dim=-3)
+    raise ValueError(f"Unknown semantic boundary feature mode: {mode}")
 
 
 def balanced_boundary_l1(predicted: Tensor, target: Tensor, weight: Tensor) -> Tensor:

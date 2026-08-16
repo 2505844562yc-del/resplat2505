@@ -91,6 +91,8 @@ semantic_boundary_gain: 5.0
 semantic_boundary_confidence_floor: 0.5
 semantic_boundary_feedback_scale: 1.0
 semantic_boundary_feature_mode: residual
+semantic_boundary_alignment_radius: 4
+semantic_boundary_alignment_sigma: 2.0
 
 # AMP
 use_amp: true

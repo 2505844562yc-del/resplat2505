@@ -108,7 +108,11 @@ class EncoderReSplatCfg:
     semantic_boundary_gain: float
     semantic_boundary_confidence_floor: float
     semantic_boundary_feedback_scale: float
-    semantic_boundary_feature_mode: Literal["residual", "residual_gradient"]
+    semantic_boundary_feature_mode: Literal[
+        "residual", "residual_gradient", "residual_alignment"
+    ]
+    semantic_boundary_alignment_radius: int
+    semantic_boundary_alignment_sigma: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -949,6 +953,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     gain=self.cfg.semantic_boundary_gain,
                     confidence_floor=self.cfg.semantic_boundary_confidence_floor,
                     mode=self.cfg.semantic_boundary_feature_mode,
+                    alignment_radius=self.cfg.semantic_boundary_alignment_radius,
+                    alignment_sigma=self.cfg.semantic_boundary_alignment_sigma,
                 )
                 boundary_error = rearrange(
                     boundary_error, "b v c h w -> (b v) c h w"

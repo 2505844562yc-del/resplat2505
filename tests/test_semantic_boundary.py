@@ -6,6 +6,7 @@ from src.model.semantic_boundary import (
     balanced_boundary_l1,
     confidence_gated_boundary_features,
     confidence_gated_boundary_residual,
+    local_boundary_alignment_vector,
     rgb_to_soft_boundary,
 )
 
@@ -45,6 +46,31 @@ class SemanticBoundaryTest(unittest.TestCase):
         self.assertEqual(float(features[..., 2, 2:-2, 2:-2].abs().sum()), 0.0)
         features.mean().backward()
         self.assertTrue(torch.isfinite(image.grad).all())
+
+    def test_local_alignment_points_to_nearby_target_boundary(self):
+        predicted = torch.zeros(1, 1, 1, 9, 9, requires_grad=True)
+        target = torch.zeros_like(predicted)
+        with torch.no_grad():
+            predicted[..., 4, 2] = 1.0
+            target[..., 4, 5] = 1.0
+        confidence = torch.ones_like(predicted)
+        vector_x, vector_y = local_boundary_alignment_vector(
+            predicted, target, confidence, radius=4, sigma=1.0
+        )
+        self.assertAlmostEqual(float(vector_x[..., 4, 2]), 0.75, places=5)
+        self.assertAlmostEqual(float(vector_y[..., 4, 2]), 0.0, places=5)
+        self.assertEqual(float(vector_x[..., :2].abs().sum()), 0.0)
+        (vector_x.mean() + vector_y.mean()).backward()
+        self.assertTrue(torch.isfinite(predicted.grad).all())
+
+    def test_local_alignment_rejects_untrusted_target(self):
+        predicted = torch.ones(1, 1, 1, 7, 7)
+        target = torch.zeros_like(predicted)
+        target[..., 3, 5] = 1.0
+        vector_x, vector_y = local_boundary_alignment_vector(
+            predicted, target, torch.zeros_like(target), radius=3
+        )
+        self.assertEqual(float(vector_x.abs().sum() + vector_y.abs().sum()), 0.0)
 
     def test_boundary_feature_mode_is_validated(self):
         image = torch.zeros(1, 1, 3, 5, 5)
