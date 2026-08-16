@@ -18,6 +18,7 @@ DISPLACEMENT_DIAGNOSTIC_PATH="${11:-null}"
 USE_PARAMETER_ROUTING="${12:-false}"
 ROUTE_APPEARANCE="${13:-true}"
 USE_SELECTIVE_REFINEMENT="${14:-false}"
+USE_SEMANTIC_INIT="${15:-false}"
 SCENE="032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7"
 
 case "${VARIANT}" in
@@ -63,7 +64,7 @@ if [[ "${FEATURE_MODE}" != residual && "${FEATURE_MODE}" != residual_gradient \
   exit 2
 fi
 
-for value in "${USE_MULTIVIEW_CONSENSUS}" "${GATE_BOUNDARY_LOSS}" "${USE_PARAMETER_ROUTING}" "${ROUTE_APPEARANCE}" "${USE_SELECTIVE_REFINEMENT}"; do
+for value in "${USE_MULTIVIEW_CONSENSUS}" "${GATE_BOUNDARY_LOSS}" "${USE_PARAMETER_ROUTING}" "${ROUTE_APPEARANCE}" "${USE_SELECTIVE_REFINEMENT}" "${USE_SEMANTIC_INIT}"; do
   if [[ "${value}" != true && "${value}" != false ]]; then
     echo "multi-view flags must be true or false" >&2
     exit 2
@@ -98,6 +99,9 @@ if [[ "${USE_PARAMETER_ROUTING}" == true ]]; then
 fi
 if [[ "${USE_SELECTIVE_REFINEMENT}" == true ]]; then
   OUT="outputs/stage10_selective_refinement/${FEATURE_MODE}_focused_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
+fi
+if [[ "${USE_SEMANTIC_INIT}" == true ]]; then
+  OUT="outputs/v2_semantic_init/${VARIANT}_${FEATURE_MODE}_geometry_grad_${STEPS}steps_bw${SAFE_BW}_fs${SAFE_FS}_ar${SAFE_AR}_as${SAFE_AS}"
 fi
 if [[ "${USE_MULTIVIEW_CONSENSUS}" == true ]]; then
   SAFE_BLEND="${CONSENSUS_BLEND//./p}"
@@ -139,6 +143,16 @@ if [[ "${USE_SELECTIVE_REFINEMENT}" == true ]]; then
     "model.encoder.semantic_selective_gate_bias=-2.0"
     "model.encoder.semantic_selective_gain=0.5"
     "model.encoder.semantic_selective_radius=2"
+  )
+fi
+if [[ "${USE_SEMANTIC_INIT}" == true ]]; then
+  EXTRA_OVERRIDES+=(
+    "model.encoder.use_semantic_gaussian_init=true"
+    "model.encoder.semantic_init_hidden_channels=32"
+    "model.encoder.semantic_init_gate_bias=-2.0"
+    "model.encoder.semantic_init_proximity_radius=4"
+    "model.encoder.semantic_init_depth_gain=0.1"
+    "model.encoder.semantic_init_scale_gain=0.5"
   )
 fi
 

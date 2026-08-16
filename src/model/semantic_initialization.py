@@ -75,7 +75,7 @@ class SemanticGeometryAdapter(nn.Module):
 
     def forward(
         self, base_features: Tensor, semantic_features: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         if base_features.ndim != 4:
             raise ValueError("base_features must have shape [BV, C, H, W]")
         if semantic_features.ndim != 4 or semantic_features.shape[1] != 3:
@@ -89,4 +89,34 @@ class SemanticGeometryAdapter(nn.Module):
         encoded = self.encoder(semantic_features.to(base_features.dtype))
         gate = torch.sigmoid(self.gate(torch.cat((base_features, encoded), dim=1)))
         residual = self.projection(encoded)
-        return base_features + gate * residual, gate, residual
+        return base_features + gate * residual, gate, residual, encoded
+
+
+def apply_semantic_initial_geometry(
+    depths: Tensor,
+    raw_scales: Tensor,
+    corrections: Tensor,
+    gate: Tensor,
+    depth_gain: float = 0.1,
+    scale_gain: float = 0.5,
+) -> tuple[Tensor, Tensor]:
+    """Apply bounded semantic corrections to initial depth and raw scale."""
+    if depths.shape[-2:] != (1, 1):
+        raise ValueError("depths must end with [1, 1]")
+    prefix = raw_scales.shape[:-1]
+    if raw_scales.shape[-1] != 3 or depths.shape[:-2] != prefix:
+        raise ValueError("depth and raw scale leading shapes must match")
+    if corrections.shape != (*prefix, 4) or gate.shape != (*prefix, 1):
+        raise ValueError("corrections/gate must have shapes [..., 4] and [..., 1]")
+    if depth_gain < 0 or scale_gain < 0:
+        raise ValueError("geometry gains must be non-negative")
+    gate = gate.clamp(0, 1)
+    depth_correction = corrections[..., 0:1]
+    scale_correction = corrections[..., 1:4]
+    corrected_depths = depths * torch.exp(
+        depth_gain * gate.unsqueeze(-1) * torch.tanh(depth_correction).unsqueeze(-1)
+    )
+    corrected_scales = raw_scales + (
+        scale_gain * gate * torch.tanh(scale_correction)
+    )
+    return corrected_depths, corrected_scales

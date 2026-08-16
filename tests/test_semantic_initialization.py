@@ -4,6 +4,7 @@ import torch
 
 from src.model.semantic_initialization import (
     SemanticGeometryAdapter,
+    apply_semantic_initial_geometry,
     boundary_proximity_features,
 )
 
@@ -53,14 +54,15 @@ class SemanticGeometryAdapterTest(unittest.TestCase):
         adapter = SemanticGeometryAdapter(8, hidden_channels=4)
         base = torch.randn(2, 8, 4, 6)
         semantic = torch.randn(2, 3, 8, 12)
-        fused, gate, residual = adapter(base, semantic)
+        fused, gate, residual, encoded = adapter(base, semantic)
         self.assertTrue(torch.equal(fused, base))
         self.assertEqual(gate.shape, (2, 1, 4, 6))
         self.assertEqual(residual.count_nonzero().item(), 0)
+        self.assertEqual(encoded.shape, base.shape)
 
     def test_projection_receives_gradient(self):
         adapter = SemanticGeometryAdapter(4, hidden_channels=3)
-        fused, _, _ = adapter(
+        fused, _, _, _ = adapter(
             torch.randn(1, 4, 3, 5), torch.randn(1, 3, 6, 10)
         )
         fused.square().mean().backward()
@@ -70,6 +72,49 @@ class SemanticGeometryAdapterTest(unittest.TestCase):
         adapter = SemanticGeometryAdapter(4)
         with self.assertRaises(ValueError):
             adapter(torch.zeros(1, 4, 2, 2), torch.zeros(1, 2, 2, 2))
+
+
+class SemanticInitialGeometryTest(unittest.TestCase):
+    def test_zero_correction_is_exact_identity(self):
+        depths = torch.ones(1, 2, 3, 1, 1)
+        scales = torch.randn(1, 2, 3, 3)
+        out_depths, out_scales = apply_semantic_initial_geometry(
+            depths,
+            scales,
+            torch.zeros(1, 2, 3, 4),
+            torch.ones(1, 2, 3, 1),
+        )
+        self.assertTrue(torch.equal(out_depths, depths))
+        self.assertTrue(torch.equal(out_scales, scales))
+
+    def test_depth_and_scale_are_independent_and_bounded(self):
+        depths = torch.ones(1, 1, 1, 1, 1)
+        scales = torch.zeros(1, 1, 1, 3)
+        corrections = torch.tensor([[[[10.0, 10.0, 0.0, -10.0]]]])
+        out_depths, out_scales = apply_semantic_initial_geometry(
+            depths,
+            scales,
+            corrections,
+            torch.ones(1, 1, 1, 1),
+            depth_gain=0.1,
+            scale_gain=0.5,
+        )
+        self.assertAlmostEqual(out_depths.item(), torch.exp(torch.tensor(0.1)).item(), places=5)
+        self.assertTrue(
+            torch.allclose(out_scales, torch.tensor([[[[0.5, 0.0, -0.5]]]]))
+        )
+
+    def test_closed_gate_is_identity(self):
+        depths = torch.ones(1, 1, 1, 1, 1)
+        scales = torch.ones(1, 1, 1, 3)
+        out = apply_semantic_initial_geometry(
+            depths,
+            scales,
+            torch.ones(1, 1, 1, 4),
+            torch.zeros(1, 1, 1, 1),
+        )
+        self.assertTrue(torch.equal(out[0], depths))
+        self.assertTrue(torch.equal(out[1], scales))
 
 
 if __name__ == "__main__":

@@ -296,7 +296,10 @@ class ModelWrapper(LightningModule):
                 condition_features = concat
 
         else:
-            if self.encoder.cfg.num_refine > 0:
+            if (
+                self.encoder.cfg.num_refine > 0
+                and not self.encoder.cfg.use_semantic_gaussian_init
+            ):
                 with torch.no_grad():
                     gaussians = self.encoder(
                         batch["context"], self.global_step, False, scene_names=batch["scene"]

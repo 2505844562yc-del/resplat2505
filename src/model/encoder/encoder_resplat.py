@@ -44,6 +44,7 @@ from ..semantic_routing import apply_semantic_parameter_routes
 from ..semantic_selective_refinement import apply_selective_geometry_residual
 from ..semantic_initialization import (
     SemanticGeometryAdapter,
+    apply_semantic_initial_geometry,
     boundary_proximity_features,
 )
 
@@ -162,6 +163,8 @@ class EncoderReSplatCfg:
     semantic_init_hidden_channels: int
     semantic_init_gate_bias: float
     semantic_init_proximity_radius: int
+    semantic_init_depth_gain: float
+    semantic_init_scale_gain: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -291,6 +294,16 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     hidden_channels=self.cfg.semantic_init_hidden_channels,
                     gate_bias=self.cfg.semantic_init_gate_bias,
                 )
+                self.semantic_init_geometry_head = nn.Sequential(
+                    nn.Linear(2 * channels, self.cfg.semantic_init_hidden_channels),
+                    nn.GELU(),
+                    nn.Linear(
+                        self.cfg.semantic_init_hidden_channels,
+                        4 * self.cfg.init_gaussian_multiple,
+                    ),
+                )
+            nn.init.zeros_(self.semantic_init_geometry_head[-1].weight)
+            nn.init.zeros_(self.semantic_init_geometry_head[-1].bias)
 
         # Create PT head using factory function (KNN attention)
         self.pt = create_init_point_transformer(self.cfg, channels)
@@ -728,7 +741,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 tmp_feature_grid = rearrange(
                     tmp_feature, "(bv h w) c -> bv c h w", h=h, w=w
                 )
-                tmp_feature_grid, semantic_gate, semantic_residual = (
+                tmp_feature_grid, semantic_gate, semantic_residual, semantic_encoded = (
                     self.semantic_init_adapter(tmp_feature_grid, semantic_features)
                 )
                 tmp_feature = rearrange(
@@ -770,6 +783,15 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 pt_kwargs["intrinsics"] = context["intrinsics"][0]  # [V, 3, 3]
             pt_output = self.pt((point_cloud, tmp_feature, offset), **pt_kwargs)
             out = tmp_feature + pt_output
+
+            semantic_geometry_output = None
+            if self.cfg.use_semantic_gaussian_init:
+                semantic_encoded_flat = rearrange(
+                    semantic_encoded, "bv c h w -> (bv h w) c"
+                )
+                semantic_geometry_output = self.semantic_init_geometry_head(
+                    torch.cat((out, semantic_encoded_flat), dim=-1)
+                )
 
             condition_features = rearrange(out, "(bv h w) c -> bv c h w", h=h, w=w)
 
@@ -847,6 +869,24 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
         latent_h, latent_w = gaussians.shape[-2:]
 
+        semantic_geometry_corrections = None
+        semantic_geometry_gate = None
+        if semantic_geometry_output is not None:
+            semantic_geometry_output = rearrange(
+                semantic_geometry_output,
+                "(b v h w) c -> b v (h w) c",
+                b=b,
+                v=v,
+                h=latent_h,
+                w=latent_w,
+            )
+            semantic_geometry_gate = rearrange(
+                semantic_gate,
+                "(b v) 1 h w -> b v 1 h w",
+                b=b,
+                v=v,
+            )
+
         if repeat > 1:
             # reshape all the gaussian parameters
             r = int(np.sqrt(repeat))
@@ -855,6 +895,45 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             opacities_raw = rearrange(opacities_raw, "b v (h w) (c x y) -> b v (h x w y) c", h=latent_h, w=latent_w, x=r, y=r)
             offset = rearrange(offset, "b v (h w) (c x y) -> b v (h x w y) c", h=latent_h, w=latent_w, x=r, y=r)
             sh = rearrange(sh, "b v (h w) (c x y) -> b v (h x w y) c", h=latent_h, w=latent_w, x=r, y=r)
+            if semantic_geometry_output is not None:
+                semantic_geometry_corrections = rearrange(
+                    semantic_geometry_output,
+                    "b v (h w) (c x y) -> b v (h x w y) c",
+                    h=latent_h,
+                    w=latent_w,
+                    c=4,
+                    x=r,
+                    y=r,
+                )
+                semantic_geometry_gate = F.interpolate(
+                    rearrange(
+                        semantic_geometry_gate, "b v c h w -> (b v) c h w"
+                    ),
+                    scale_factor=r,
+                    mode="nearest",
+                )
+                semantic_geometry_gate = rearrange(
+                    semantic_geometry_gate,
+                    "(b v) 1 h w -> b v (h w) 1",
+                    b=b,
+                    v=v,
+                )
+        elif semantic_geometry_output is not None:
+            semantic_geometry_corrections = semantic_geometry_output
+            semantic_geometry_gate = rearrange(
+                semantic_geometry_gate,
+                "b v 1 h w -> b v (h w) 1",
+            )
+
+        if semantic_geometry_corrections is not None:
+            depths, scales = apply_semantic_initial_geometry(
+                depths,
+                scales,
+                semantic_geometry_corrections,
+                semantic_geometry_gate,
+                depth_gain=self.cfg.semantic_init_depth_gain,
+                scale_gain=self.cfg.semantic_init_scale_gain,
+            )
 
         opacities = opacities_raw.sigmoid()  # [B, V, H*W*K, 1]
 
@@ -1001,8 +1080,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
         prev_gaussians = init_gaussians
 
-        prev_means = prev_gaussians.means.detach()  # [B, N, 3]
-        prev_scales = prev_gaussians.scales.detach()  # [B, N, 3]
+        if self.cfg.use_semantic_gaussian_init:
+            prev_means = prev_gaussians.means  # [B, N, 3]
+            prev_scales = prev_gaussians.scales  # [B, N, 3]
+        else:
+            prev_means = prev_gaussians.means.detach()  # [B, N, 3]
+            prev_scales = prev_gaussians.scales.detach()  # [B, N, 3]
         # use unnormalized rotations since we are going to refine the unnormed rotations
         prev_rotations_unnorm = prev_gaussians.rotations_unnorm.detach()  # [B, N, 4]
         # before sigmoid, epe is necessary, otherwise might be nan
@@ -1445,8 +1528,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             ), dim=-1)  # [B, N, C]
 
             # detach previous gaussians
-            prev_means = prev_means.detach()
-            prev_scales = prev_scales.detach()
+            # Version-2 semantic initialization must retain its geometry graph
+            # through the first recurrent render/update. Frozen base modules do
+            # not receive gradients; only semantic-init parameters remain live.
+            if not self.cfg.use_semantic_gaussian_init:
+                prev_means = prev_means.detach()
+                prev_scales = prev_scales.detach()
             prev_rotations_unnorm = prev_rotations_unnorm.detach()
             prev_opacities_raw = prev_opacities_raw.detach()
             prev_shs = prev_shs.detach()
