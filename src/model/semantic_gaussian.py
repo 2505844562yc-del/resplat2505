@@ -35,3 +35,15 @@ class SemanticFeatureProjector(nn.Module):
             align_corners=False,
         )
         return F.normalize(projected, dim=1, eps=1e-6)
+
+
+def apply_semantic_state_residual(
+    features: Tensor, residual: Tensor, gain: float = 0.1
+) -> Tensor:
+    """Apply a bounded FP32 residual and return unit semantic embeddings."""
+    if features.shape != residual.shape or features.ndim != 3:
+        raise ValueError("features and residual must share shape [B, G, D]")
+    if gain < 0:
+        raise ValueError("semantic state residual gain must be non-negative")
+    updated = features.float() + gain * torch.tanh(residual.float())
+    return F.normalize(updated, dim=-1, eps=1e-6)

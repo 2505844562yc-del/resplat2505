@@ -677,6 +677,37 @@ class ModelWrapper(LightningModule):
             self.log(f"loss/depth_smooth", depth_smooth_loss)
             total_loss = total_loss + depth_smooth_loss
 
+        if self.encoder.cfg.use_semantic_state_refinement:
+            semantic_render, semantic_alpha = self.decoder.forward_features(
+                gaussians,
+                batch["target"]["extrinsics"],
+                batch["target"]["intrinsics"],
+                batch["target"]["near"],
+                batch["target"]["far"],
+                (h, w),
+            )
+            with torch.no_grad():
+                semantic_teacher = self.encoder.extract_semantic_teacher_features(
+                    batch["target"]["image"], (h, w)
+                )
+            semantic_cosine = F.cosine_similarity(
+                semantic_render, semantic_teacher, dim=2
+            )
+            semantic_valid = semantic_alpha >= 0.1
+            semantic_feature_loss = (
+                1.0 - semantic_cosine.masked_select(semantic_valid).mean()
+            )
+            semantic_render_std = semantic_render.permute(
+                0, 1, 3, 4, 2
+            ).reshape(-1, semantic_render.shape[2]).std(dim=0).mean()
+            self.log("loss/semantic_feature", semantic_feature_loss)
+            self.log("semantic/target_cosine", 1.0 - semantic_feature_loss)
+            self.log("semantic/render_feature_std", semantic_render_std)
+            total_loss = total_loss + (
+                self.encoder.cfg.semantic_feature_loss_weight
+                * semantic_feature_loss
+            )
+
         self.log("loss/total", total_loss)
 
         if hasattr(self.encoder, "semantic_init_diagnostics"):

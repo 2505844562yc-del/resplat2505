@@ -126,6 +126,9 @@ semantic_feature_dim: 16
 semantic_feature_teacher_layer: -1
 semantic_feature_projection_seed: 3407
 semantic_feature_projection_trainable: false
+use_semantic_state_refinement: false
+semantic_state_residual_gain: 0.1
+semantic_feature_loss_weight: 0.1
 
 # AMP
 use_amp: true

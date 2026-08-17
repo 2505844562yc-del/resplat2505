@@ -289,9 +289,12 @@ def train(cfg_dict: DictConfig):
         if cfg.model.encoder.num_refine > 0:
             print('train refine only')
             for name, params in model_wrapper.named_parameters():
-                trainable = 'encoder.update' in name
-                if cfg.model.encoder.use_semantic_gaussian_init:
-                    trainable = trainable or 'encoder.semantic_init' in name
+                if cfg.model.encoder.use_semantic_state_refinement:
+                    trainable = 'encoder.semantic_state_head' in name
+                else:
+                    trainable = 'encoder.update' in name
+                    if cfg.model.encoder.use_semantic_gaussian_init:
+                        trainable = trainable or 'encoder.semantic_init' in name
                 if not trainable:
                     params.requires_grad = False
 

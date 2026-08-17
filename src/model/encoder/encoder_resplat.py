@@ -47,7 +47,10 @@ from ..semantic_initialization import (
     apply_semantic_initial_geometry,
     boundary_proximity_features,
 )
-from ..semantic_gaussian import SemanticFeatureProjector
+from ..semantic_gaussian import (
+    SemanticFeatureProjector,
+    apply_semantic_state_residual,
+)
 
 @dataclass
 class EncoderReSplatCfg:
@@ -172,6 +175,9 @@ class EncoderReSplatCfg:
     semantic_feature_teacher_layer: int
     semantic_feature_projection_seed: int
     semantic_feature_projection_trainable: bool
+    use_semantic_state_refinement: bool
+    semantic_state_residual_gain: float
+    semantic_feature_loss_weight: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -534,6 +540,19 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             # init the delta as 0
             nn.init.zeros_(self.update_head[-1].weight)
             nn.init.zeros_(self.update_head[-1].bias)
+
+            if self.cfg.use_semantic_state_refinement:
+                if not self.cfg.use_semantic_gaussian_features:
+                    raise ValueError(
+                        "semantic state refinement requires semantic Gaussian features"
+                    )
+                self.semantic_state_head = nn.Sequential(
+                    nn.Linear(channels, channels),
+                    nn.GELU(),
+                    nn.Linear(channels, self.cfg.semantic_feature_dim),
+                )
+                nn.init.zeros_(self.semantic_state_head[-1].weight)
+                nn.init.zeros_(self.semantic_state_head[-1].bias)
 
             # ResNet-18 feature extractor (cached)
             self.update_feature = ResNetFeatureWarpper(
@@ -1782,6 +1801,9 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
                 # delta gaussian head
                 delta_gaussians = self.update_head(tmp_state)
+                delta_semantic_state = None
+                if self.cfg.use_semantic_state_refinement:
+                    delta_semantic_state = self.semantic_state_head(tmp_state)
                 semantic_selective_output = None
                 if semantic_selective_features is not None:
                     flat_semantic_features = rearrange(
@@ -1795,6 +1817,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
             # update gaussian parameters
             delta_gaussians = rearrange(delta_gaussians, "(b n) c -> b n c", b=b)
+            if delta_semantic_state is not None:
+                delta_semantic_state = rearrange(
+                    delta_semantic_state, "(b n) c -> b n c", b=b
+                )
 
             if self.cfg.init_gaussian_multiple > 1 and not self.cfg.refine_same_num_points:
                 repeat = self.cfg.init_gaussian_multiple
@@ -1825,6 +1851,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 delta_rotations = rearrange(delta_rotations, "b n (c k) -> b (n k) c", k=repeat)
                 delta_opacities = rearrange(delta_opacities, "b n (c k) -> b (n k) c", k=repeat)
                 delta_shs = rearrange(delta_shs, "b n (c k) -> b (n k) c", k=repeat)
+                if delta_semantic_state is not None:
+                    delta_semantic_state = delta_semantic_state.repeat_interleave(
+                        repeat, dim=1
+                    )
                 if semantic_parameter_routes is not None:
                     semantic_parameter_routes = (
                         semantic_parameter_routes.repeat_interleave(
@@ -1895,6 +1925,13 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             prev_opacities_raw = prev_opacities_raw + delta_opacities
 
             prev_shs = prev_shs + delta_shs
+
+            if delta_semantic_state is not None:
+                prev_semantic_features = apply_semantic_state_residual(
+                    prev_semantic_features,
+                    delta_semantic_state,
+                    gain=self.cfg.semantic_state_residual_gain,
+                )
 
             # update gaussians
             prev_gaussians = Gaussians(
