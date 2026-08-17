@@ -129,6 +129,8 @@ semantic_feature_projection_trainable: false
 use_semantic_state_refinement: false
 semantic_state_residual_gain: 0.1
 semantic_feature_loss_weight: 0.1
+use_semantic_residual_feedback: false
+semantic_residual_alpha_floor: 0.1
 
 # AMP
 use_amp: true

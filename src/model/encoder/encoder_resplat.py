@@ -50,6 +50,7 @@ from ..semantic_initialization import (
 from ..semantic_gaussian import (
     SemanticFeatureProjector,
     apply_semantic_state_residual,
+    semantic_render_residual_features,
 )
 
 @dataclass
@@ -178,6 +179,8 @@ class EncoderReSplatCfg:
     use_semantic_state_refinement: bool
     semantic_state_residual_gain: float
     semantic_feature_loss_weight: float
+    use_semantic_residual_feedback: bool
+    semantic_residual_alpha_floor: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -546,8 +549,11 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     raise ValueError(
                         "semantic state refinement requires semantic Gaussian features"
                     )
+                semantic_head_channels = channels
+                if self.cfg.use_semantic_residual_feedback:
+                    semantic_head_channels += self.cfg.semantic_feature_dim + 2
                 self.semantic_state_head = nn.Sequential(
-                    nn.Linear(channels, channels),
+                    nn.Linear(semantic_head_channels, channels),
                     nn.GELU(),
                     nn.Linear(channels, self.cfg.semantic_feature_dim),
                 )
@@ -1287,6 +1293,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         else:
             pass
 
+        state_h, state_w = state.shape[-2:]
+
         # [B, N, C]
         state = rearrange(state, "(b v) c h w -> b (v h w) c", b=b, v=v)
 
@@ -1296,6 +1304,27 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
         tmp_state = rearrange(state, "b n c -> (b n) c")
         init_state = tmp_state
+
+        semantic_context_teacher = None
+        if self.cfg.use_semantic_residual_feedback:
+            if prev_semantic_features is None:
+                raise RuntimeError(
+                    "semantic residual feedback requires Gaussian semantic features"
+                )
+            expected_gaussians = v * state_h * state_w
+            if prev_semantic_features.shape[1] != expected_gaussians:
+                raise ValueError(
+                    "semantic residual feedback requires one Gaussian per recurrent "
+                    "token; expected "
+                    f"{expected_gaussians}, got {prev_semantic_features.shape[1]}"
+                )
+            semantic_context_teacher = rearrange(
+                prev_semantic_features.detach(),
+                "b (v h w) d -> b v d h w",
+                v=v,
+                h=state_h,
+                w=state_w,
+            )
 
         # render input views
         input_render = renderer.forward(
@@ -1314,6 +1343,33 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             semantic_parameter_routes = None
             semantic_selective_features = None
             semantic_selective_active = None
+            semantic_residual_feedback = None
+            if self.cfg.use_semantic_residual_feedback:
+                with torch.no_grad():
+                    semantic_render, semantic_alpha = renderer.forward_features(
+                        prev_gaussians,
+                        context["extrinsics"],
+                        context["intrinsics"],
+                        context["near"],
+                        context["far"],
+                        (state_h, state_w),
+                    )
+                    semantic_residual_feedback = (
+                        semantic_render_residual_features(
+                            semantic_render,
+                            semantic_context_teacher,
+                            semantic_alpha,
+                            alpha_floor=self.cfg.semantic_residual_alpha_floor,
+                        )
+                    )
+                    semantic_residual_feedback = rearrange(
+                        semantic_residual_feedback,
+                        "b v c h w -> (b v h w) c",
+                    )
+                if semantic_residual_feedback.shape[0] != tmp_state.shape[0]:
+                    raise RuntimeError(
+                        "semantic residual feedback and recurrent tokens are misaligned"
+                    )
             input0 = rearrange(input_render.color, "b v c h w -> (b v) c h w")
             gt_input = context["image"]
             input1 = rearrange(gt_input, "b v c h w -> (b v) c h w")
@@ -1803,7 +1859,14 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 delta_gaussians = self.update_head(tmp_state)
                 delta_semantic_state = None
                 if self.cfg.use_semantic_state_refinement:
-                    delta_semantic_state = self.semantic_state_head(tmp_state)
+                    semantic_state_input = tmp_state
+                    if self.cfg.use_semantic_residual_feedback:
+                        semantic_state_input = torch.cat(
+                            (tmp_state, semantic_residual_feedback), dim=-1
+                        )
+                    delta_semantic_state = self.semantic_state_head(
+                        semantic_state_input
+                    )
                 semantic_selective_output = None
                 if semantic_selective_features is not None:
                     flat_semantic_features = rearrange(

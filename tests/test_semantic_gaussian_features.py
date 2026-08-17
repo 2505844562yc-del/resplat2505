@@ -5,6 +5,7 @@ import torch
 from src.model.semantic_gaussian import (
     SemanticFeatureProjector,
     apply_semantic_state_residual,
+    semantic_render_residual_features,
 )
 
 
@@ -55,4 +56,40 @@ class SemanticStateResidualTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_semantic_state_residual(
                 torch.randn(1, 4, 8), torch.randn(1, 4, 4)
+            )
+
+
+class SemanticRenderResidualFeaturesTest(unittest.TestCase):
+    def test_identical_features_have_zero_residual(self):
+        teacher = torch.nn.functional.normalize(
+            torch.randn(1, 2, 8, 3, 4), dim=2
+        )
+        output = semantic_render_residual_features(
+            teacher, teacher, torch.ones(1, 2, 3, 4)
+        )
+        self.assertEqual(output.shape, (1, 2, 10, 3, 4))
+        self.assertTrue(torch.allclose(output[:, :, :9], torch.zeros_like(output[:, :, :9]), atol=1e-6))
+        self.assertTrue(torch.allclose(output[:, :, -1], torch.ones(1, 2, 3, 4)))
+
+    def test_low_alpha_suppresses_feedback(self):
+        rendered = torch.randn(1, 1, 4, 2, 2)
+        teacher = torch.randn_like(rendered)
+        output = semantic_render_residual_features(
+            rendered, teacher, torch.full((1, 1, 2, 2), 0.05), alpha_floor=0.1
+        )
+        self.assertTrue(torch.equal(output, torch.zeros_like(output)))
+
+    def test_invalid_inputs_are_rejected(self):
+        with self.assertRaises(ValueError):
+            semantic_render_residual_features(
+                torch.randn(1, 1, 4, 2, 2),
+                torch.randn(1, 1, 4, 2, 3),
+                torch.ones(1, 1, 2, 2),
+            )
+        with self.assertRaises(ValueError):
+            semantic_render_residual_features(
+                torch.randn(1, 1, 4, 2, 2),
+                torch.randn(1, 1, 4, 2, 2),
+                torch.ones(1, 1, 2, 2),
+                alpha_floor=1.0,
             )
