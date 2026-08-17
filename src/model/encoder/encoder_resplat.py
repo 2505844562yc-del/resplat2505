@@ -50,6 +50,7 @@ from ..semantic_initialization import (
 from ..semantic_gaussian import (
     SemanticFeatureProjector,
     apply_semantic_state_residual,
+    semantic_gradient_feedback_features,
     semantic_render_residual_features,
 )
 
@@ -181,6 +182,8 @@ class EncoderReSplatCfg:
     semantic_feature_loss_weight: float
     use_semantic_residual_feedback: bool
     semantic_residual_alpha_floor: float
+    semantic_residual_alignment: str
+    semantic_vjp_direct_gain: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -551,6 +554,27 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     )
                 semantic_head_channels = channels
                 if self.cfg.use_semantic_residual_feedback:
+                    if not 0 <= self.cfg.semantic_residual_alpha_floor < 1:
+                        raise ValueError(
+                            "semantic_residual_alpha_floor must satisfy 0 <= value < 1"
+                        )
+                    if self.cfg.semantic_residual_alignment not in {
+                        "source_grid",
+                        "raster_vjp",
+                    }:
+                        raise ValueError(
+                            "semantic_residual_alignment must be source_grid or "
+                            "raster_vjp"
+                        )
+                    if self.cfg.semantic_vjp_direct_gain < 0:
+                        raise ValueError("semantic_vjp_direct_gain must be non-negative")
+                    if (
+                        self.cfg.semantic_vjp_direct_gain > 0
+                        and self.cfg.semantic_residual_alignment != "raster_vjp"
+                    ):
+                        raise ValueError(
+                            "direct semantic correction requires raster_vjp alignment"
+                        )
                     semantic_head_channels += self.cfg.semantic_feature_dim + 2
                 self.semantic_state_head = nn.Sequential(
                     nn.Linear(semantic_head_channels, channels),
@@ -1344,28 +1368,113 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             semantic_selective_features = None
             semantic_selective_active = None
             semantic_residual_feedback = None
+            semantic_direct_residual = None
             if self.cfg.use_semantic_residual_feedback:
-                with torch.no_grad():
-                    semantic_render, semantic_alpha = renderer.forward_features(
-                        prev_gaussians,
-                        context["extrinsics"],
-                        context["intrinsics"],
-                        context["near"],
-                        context["far"],
-                        (state_h, state_w),
-                    )
-                    semantic_residual_feedback = (
-                        semantic_render_residual_features(
-                            semantic_render,
-                            semantic_context_teacher,
-                            semantic_alpha,
-                            alpha_floor=self.cfg.semantic_residual_alpha_floor,
+                if self.cfg.semantic_residual_alignment == "source_grid":
+                    with torch.no_grad():
+                        semantic_render, semantic_alpha = renderer.forward_features(
+                            prev_gaussians,
+                            context["extrinsics"],
+                            context["intrinsics"],
+                            context["near"],
+                            context["far"],
+                            (state_h, state_w),
                         )
+                        semantic_residual_feedback = (
+                            semantic_render_residual_features(
+                                semantic_render,
+                                semantic_context_teacher,
+                                semantic_alpha,
+                                alpha_floor=self.cfg.semantic_residual_alpha_floor,
+                            )
+                        )
+                        semantic_residual_feedback = rearrange(
+                            semantic_residual_feedback,
+                            "b v c h w -> (b v h w) c",
+                        )
+                elif self.cfg.semantic_residual_alignment == "raster_vjp":
+                    # The image residual cannot be flattened onto source-view
+                    # Gaussians. Differentiate the context reconstruction loss
+                    # with respect to per-Gaussian semantic attributes instead;
+                    # this is the rasterizer-transpose aggregation of all pixel
+                    # residuals that each Gaussian actually contributed to.
+                    with torch.inference_mode(False), torch.enable_grad():
+                        semantic_probe = (
+                            prev_semantic_features.detach().clone().float()
+                        ).requires_grad_(True)
+
+                        def clone_tensor(value):
+                            return None if value is None else value.detach().clone()
+
+                        feedback_gaussians = Gaussians(
+                            clone_tensor(prev_gaussians.means),
+                            clone_tensor(prev_gaussians.covariances),
+                            clone_tensor(prev_gaussians.harmonics),
+                            clone_tensor(prev_gaussians.opacities),
+                            scales=clone_tensor(prev_gaussians.scales),
+                            rotations=clone_tensor(prev_gaussians.rotations),
+                            rotations_unnorm=clone_tensor(
+                                prev_gaussians.rotations_unnorm
+                            ),
+                        )
+                        semantic_render, semantic_alpha = renderer.forward_features(
+                            feedback_gaussians,
+                            context["extrinsics"],
+                            context["intrinsics"],
+                            context["near"],
+                            context["far"],
+                            (state_h, state_w),
+                            features=semantic_probe,
+                        )
+                        rendered_normalized = F.normalize(
+                            semantic_render,
+                            dim=2,
+                            eps=1e-6,
+                        )
+                        teacher_normalized = F.normalize(
+                            semantic_context_teacher.float(), dim=2, eps=1e-6
+                        )
+                        visibility = (
+                            (
+                                semantic_alpha.float()
+                                - self.cfg.semantic_residual_alpha_floor
+                            )
+                            / (1 - self.cfg.semantic_residual_alpha_floor)
+                        ).clamp(0, 1)
+                        context_cosine_error = 1.0 - (
+                            rendered_normalized * teacher_normalized
+                        ).sum(dim=2)
+                        semantic_context_loss = (
+                            context_cosine_error * visibility
+                        ).sum() / visibility.sum().clamp_min(1.0)
+                        semantic_gradient = torch.autograd.grad(
+                            semantic_context_loss,
+                            semantic_probe,
+                            create_graph=False,
+                            retain_graph=False,
+                        )[0]
+                    gaussian_gradient_feedback = semantic_gradient_feedback_features(
+                        semantic_gradient.detach()
                     )
+                    if self.cfg.semantic_vjp_direct_gain > 0:
+                        semantic_direct_residual = gaussian_gradient_feedback[
+                            ..., : self.cfg.semantic_feature_dim
+                        ]
+                    semantic_residual_feedback = gaussian_gradient_feedback
                     semantic_residual_feedback = rearrange(
                         semantic_residual_feedback,
-                        "b v c h w -> (b v h w) c",
+                        "b g c -> (b g) c",
                     )
+                    if self.training and not hasattr(
+                        self, "_logged_semantic_vjp_stats"
+                    ):
+                        print(
+                            "semantic raster VJP: "
+                            f"context_loss={semantic_context_loss.item():.6f}, "
+                            f"active={semantic_residual_feedback[:, -1].mean().item():.4f}, "
+                            f"relative_magnitude={semantic_residual_feedback[:, -2].mean().item():.4f}"
+                        )
+                        self._logged_semantic_vjp_stats = True
                 if semantic_residual_feedback.shape[0] != tmp_state.shape[0]:
                     raise RuntimeError(
                         "semantic residual feedback and recurrent tokens are misaligned"
@@ -1988,6 +2097,13 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             prev_opacities_raw = prev_opacities_raw + delta_opacities
 
             prev_shs = prev_shs + delta_shs
+
+            if semantic_direct_residual is not None:
+                prev_semantic_features = apply_semantic_state_residual(
+                    prev_semantic_features,
+                    semantic_direct_residual,
+                    gain=self.cfg.semantic_vjp_direct_gain,
+                )
 
             if delta_semantic_state is not None:
                 prev_semantic_features = apply_semantic_state_residual(

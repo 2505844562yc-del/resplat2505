@@ -131,6 +131,8 @@ semantic_state_residual_gain: 0.1
 semantic_feature_loss_weight: 0.1
 use_semantic_residual_feedback: false
 semantic_residual_alpha_floor: 0.1
+semantic_residual_alignment: source_grid
+semantic_vjp_direct_gain: 0.0
 
 # AMP
 use_amp: true

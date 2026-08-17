@@ -83,3 +83,30 @@ def semantic_render_residual_features(
         1.0 - (teacher * rendered).sum(dim=2, keepdim=True)
     ).clamp(0, 2) * visibility
     return torch.cat((directional_residual, cosine_error, visibility), dim=2)
+
+
+def semantic_gradient_feedback_features(
+    gradient: Tensor,
+    relative_scale: float = 4.0,
+    eps: float = 1e-8,
+) -> Tensor:
+    """Convert a semantic-rendering VJP into bounded per-Gaussian feedback.
+
+    The negative normalized gradient is the local correction direction. Its
+    magnitude is normalized by the per-scene mean so the representation is
+    insensitive to image size and the loss reduction convention.
+    """
+    if gradient.ndim != 3:
+        raise ValueError("gradient must have shape [B, G, D]")
+    if relative_scale <= 0:
+        raise ValueError("relative_scale must be positive")
+    gradient = gradient.float()
+    magnitude = gradient.norm(dim=-1, keepdim=True)
+    mean_magnitude = magnitude.mean(dim=1, keepdim=True).clamp_min(eps)
+    relative_magnitude = (magnitude / (relative_scale * mean_magnitude)).clamp(0, 1)
+    direction = -gradient / magnitude.clamp_min(eps)
+    direction = torch.where(magnitude > eps, direction, torch.zeros_like(direction))
+    active = (magnitude > eps).to(gradient.dtype)
+    return torch.cat(
+        (direction * relative_magnitude, relative_magnitude, active), dim=-1
+    )

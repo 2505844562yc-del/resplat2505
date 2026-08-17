@@ -5,6 +5,7 @@ import torch
 from src.model.semantic_gaussian import (
     SemanticFeatureProjector,
     apply_semantic_state_residual,
+    semantic_gradient_feedback_features,
     semantic_render_residual_features,
 )
 
@@ -93,3 +94,24 @@ class SemanticRenderResidualFeaturesTest(unittest.TestCase):
                 torch.ones(1, 1, 2, 2),
                 alpha_floor=1.0,
             )
+
+
+class SemanticGradientFeedbackFeaturesTest(unittest.TestCase):
+    def test_gradient_becomes_bounded_descent_direction(self):
+        gradient = torch.tensor([[[3.0, 4.0], [0.0, 0.0]]])
+        output = semantic_gradient_feedback_features(gradient, relative_scale=1.0)
+        self.assertEqual(output.shape, (1, 2, 4))
+        self.assertTrue(torch.all(output[..., -2] >= 0))
+        self.assertTrue(torch.all(output[..., -2] <= 1))
+        self.assertTrue(torch.allclose(output[0, 0, :2], torch.tensor([-0.6, -0.8])))
+        self.assertTrue(torch.equal(output[0, 1], torch.zeros(4)))
+
+    def test_global_gradient_scale_does_not_change_feedback(self):
+        gradient = torch.randn(2, 7, 5)
+        first = semantic_gradient_feedback_features(gradient)
+        second = semantic_gradient_feedback_features(gradient * 1000)
+        self.assertTrue(torch.allclose(first, second, atol=1e-6))
+
+    def test_invalid_gradient_is_rejected(self):
+        with self.assertRaises(ValueError):
+            semantic_gradient_feedback_features(torch.randn(2, 3, 4, 5))
