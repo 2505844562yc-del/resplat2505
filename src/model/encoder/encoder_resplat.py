@@ -1174,6 +1174,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         # before sigmoid, epe is necessary, otherwise might be nan
         prev_opacities_raw = torch.logit(prev_gaussians.opacities.detach(), eps=1e-6)  # [B, N]
         prev_shs = prev_gaussians.harmonics.detach()  # [B, N, 3, 9]
+        # S1 carries semantic state through recurrent geometry updates unchanged.
+        # A learned delta_z is introduced only after feature rendering is stable.
+        prev_semantic_features = prev_gaussians.semantic_features
+        prev_semantic_uncertainty = prev_gaussians.semantic_uncertainty
 
         prev_opacities_raw = prev_opacities_raw.unsqueeze(-1)  # [B, N, 1]
         prev_shs = rearrange(prev_shs, "b n c x -> b n (c x)")  # [B, N, C]
@@ -1827,6 +1831,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 rotations_unnorm=prev_rotations_unnorm,
                 scale_factor=prev_gaussians.scale_factor,
                 shift=prev_gaussians.shift,
+                semantic_features=prev_semantic_features,
+                semantic_uncertainty=prev_semantic_uncertainty,
             )
 
             delta_means_all.append(delta_means)

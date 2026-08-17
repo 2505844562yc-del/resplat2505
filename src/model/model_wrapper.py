@@ -55,6 +55,7 @@ from ..evaluation.depth_metrics import compute_depth_errors
 from ..loss.loss_depth_smooth import get_smooth_loss
 
 from .types import Gaussians
+from .gaussian_utils import merge_gaussians
 from .semantic_boundary import balanced_boundary_l1, rgb_to_soft_boundary
 
 try:
@@ -252,15 +253,7 @@ class ModelWrapper(LightningModule):
 
             # merge all gaussians
             # ['means', 'covariances', 'harmonics', 'opacities']
-            gaussians = Gaussians(
-                torch.cat([g.means for g in all_gaussians], dim=1),
-                torch.cat([g.covariances for g in all_gaussians], dim=1),
-                torch.cat([g.harmonics for g in all_gaussians], dim=1),
-                torch.cat([g.opacities for g in all_gaussians], dim=1),
-                scales=torch.cat([g.scales for g in all_gaussians], dim=1),
-                rotations=torch.cat([g.rotations for g in all_gaussians], dim=1),
-                rotations_unnorm=torch.cat([g.rotations_unnorm for g in all_gaussians], dim=1),
-            )
+            gaussians = merge_gaussians(all_gaussians)
 
             # global refine after simply combining local window gaussians
             if self.encoder.cfg.num_refine > 0:
@@ -842,15 +835,7 @@ class ModelWrapper(LightningModule):
 
                 # merge all gaussians
                 # ['means', 'covariances', 'harmonics', 'opacities']
-                gaussians = Gaussians(
-                    torch.cat([g.means for g in all_gaussians], dim=1),
-                    torch.cat([g.covariances for g in all_gaussians], dim=1),
-                    torch.cat([g.harmonics for g in all_gaussians], dim=1),
-                    torch.cat([g.opacities for g in all_gaussians], dim=1),
-                    scales=torch.cat([g.scales for g in all_gaussians], dim=1),
-                    rotations=torch.cat([g.rotations for g in all_gaussians], dim=1),
-                    rotations_unnorm=torch.cat([g.rotations_unnorm for g in all_gaussians], dim=1),
-                )
+                gaussians = merge_gaussians(all_gaussians)
                 if self.test_cfg.compute_scores and self.encoder.cfg.num_refine > 0:
                     initial_gaussians_for_eval = gaussians
 
@@ -1376,15 +1361,7 @@ class ModelWrapper(LightningModule):
                 all_states.append(condition_features)
 
             # merge all gaussians
-            gaussians = Gaussians(
-                torch.cat([g.means for g in all_gaussians], dim=1),
-                torch.cat([g.covariances for g in all_gaussians], dim=1),
-                torch.cat([g.harmonics for g in all_gaussians], dim=1),
-                torch.cat([g.opacities for g in all_gaussians], dim=1),
-                scales=torch.cat([g.scales for g in all_gaussians], dim=1),
-                rotations=torch.cat([g.rotations for g in all_gaussians], dim=1),
-                rotations_unnorm=torch.cat([g.rotations_unnorm for g in all_gaussians], dim=1),
-            )
+            gaussians = merge_gaussians(all_gaussians)
 
             # global refine after simply combining local window gaussians
             if self.encoder.cfg.num_refine > 0:
@@ -1723,15 +1700,7 @@ class ModelWrapper(LightningModule):
 
                     # merge all gaussians
                     # ['means', 'covariances', 'harmonics', 'opacities']
-                    gaussians = Gaussians(
-                        torch.cat([g.means for g in all_gaussians], dim=1),
-                        torch.cat([g.covariances for g in all_gaussians], dim=1),
-                        torch.cat([g.harmonics for g in all_gaussians], dim=1),
-                        torch.cat([g.opacities for g in all_gaussians], dim=1),
-                        scales=torch.cat([g.scales for g in all_gaussians], dim=1),
-                        rotations=torch.cat([g.rotations for g in all_gaussians], dim=1),
-                        rotations_unnorm=torch.cat([g.rotations_unnorm for g in all_gaussians], dim=1),
-                    )
+                    gaussians = merge_gaussians(all_gaussians)
 
                     gaussians_probabilistic = gaussians
 

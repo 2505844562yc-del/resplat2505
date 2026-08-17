@@ -18,3 +18,5 @@ class Gaussians:
     rotations_unnorm: Float[Tensor, "batch gaussian 4"] | None = None
     scale_factor: Float[Tensor, "batch"] | None = None
     shift: Float[Tensor, "batch 3"] | None = None
+    semantic_features: Float[Tensor, "batch gaussian semantic"] | None = None
+    semantic_uncertainty: Float[Tensor, "batch gaussian 1"] | None = None

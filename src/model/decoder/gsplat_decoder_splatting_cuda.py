@@ -95,3 +95,55 @@ class GSplatDecoderSplattingCUDA(Decoder[GSplatDecoderSplattingCUDACfg]):
             depth=depth,
             accumulated_alpha=render_alphas.squeeze(-1)  # [B, V, H, W]
         )
+
+    def forward_features(
+        self,
+        gaussians: Gaussians,
+        extrinsics: Float[Tensor, "batch view 4 4"],
+        intrinsics: Float[Tensor, "batch view 3 3"],
+        near: Float[Tensor, "batch view"],
+        far: Float[Tensor, "batch view"],
+        image_shape: tuple[int, int],
+        features: Tensor | None = None,
+        normalize: bool = True,
+    ) -> tuple[Tensor, Tensor]:
+        """Render arbitrary per-Gaussian features with RGB visibility weights."""
+        if features is None:
+            features = gaussians.semantic_features
+        if features is None:
+            raise ValueError("semantic features are required for feature rendering")
+        if features.ndim != 3 or features.shape[:2] != gaussians.means.shape[:2]:
+            raise ValueError("features must have shape [B, G, D]")
+
+        height, width = image_shape
+        viewmats = extrinsics.inverse()
+        scaled_intrinsics = intrinsics.clone()
+        scaled_intrinsics[:, :, 0] *= width
+        scaled_intrinsics[:, :, 1] *= height
+        covars = gaussians.covariances if self.cfg.use_covariances else None
+
+        rendered, alphas, _ = rasterization(
+            means=gaussians.means,
+            quats=gaussians.rotations_unnorm,
+            scales=gaussians.scales,
+            opacities=gaussians.opacities,
+            colors=features.float(),
+            sh_degree=None,
+            viewmats=viewmats,
+            Ks=scaled_intrinsics,
+            width=width,
+            height=height,
+            near_plane=near[0, 0].item(),
+            far_plane=far[0, 0].item(),
+            eps2d=0.1,
+            rasterize_mode="antialiased",
+            packed=True,
+            absgrad=False,
+            sparse_grad=False,
+            render_mode="RGB",
+            channel_chunk=32,
+            covars=covars,
+        )
+        if normalize:
+            rendered = rendered / alphas.clamp_min(1e-6)
+        return rendered.permute(0, 1, 4, 2, 3), alphas.squeeze(-1)
