@@ -47,6 +47,7 @@ from ..semantic_initialization import (
     apply_semantic_initial_geometry,
     boundary_proximity_features,
 )
+from ..semantic_gaussian import SemanticFeatureProjector
 
 @dataclass
 class EncoderReSplatCfg:
@@ -166,6 +167,11 @@ class EncoderReSplatCfg:
     semantic_init_depth_gain: float
     semantic_init_scale_gain: float
     semantic_init_auxiliary_loss_weight: float
+    use_semantic_gaussian_features: bool
+    semantic_feature_dim: int
+    semantic_feature_teacher_layer: int
+    semantic_feature_projection_seed: int
+    semantic_feature_projection_trainable: bool
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -247,6 +253,15 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         
         # gaussians adapter
         self.gaussian_adapter = GaussianAdapter(cfg.gaussian_adapter)
+
+        if self.cfg.use_semantic_gaussian_features:
+            teacher_channels = model_configs[self.cfg.monodepth_vit_type]["in_channels"]
+            self.semantic_feature_projector = SemanticFeatureProjector(
+                teacher_channels,
+                output_dim=self.cfg.semantic_feature_dim,
+                seed=self.cfg.semantic_feature_projection_seed,
+                trainable=self.cfg.semantic_feature_projection_trainable,
+            )
 
         # concat(img, depth, match_prob, features)
         in_channels = 3 + 1 + 1 + feature_upsampler_channels
@@ -539,6 +554,51 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 for _ in range(self.cfg.render_error_mv_attn_blocks)
             ])
 
+
+    def extract_semantic_teacher_features(
+        self, images: Tensor, output_size: tuple[int, int]
+    ) -> Tensor:
+        """Return frozen target-view DINO features in the Gaussian semantic space."""
+        if not self.cfg.use_semantic_gaussian_features:
+            raise RuntimeError("semantic Gaussian features are disabled")
+        b, v, _, original_h, original_w = images.shape
+        normalized = self.depth_predictor.normalize_images(images)
+        if original_w > self.depth_predictor.max_mono_vit_input_size:
+            resize_w = self.depth_predictor.max_mono_vit_input_size // 14 * 14
+            resize_h = int(
+                original_h / original_w
+                * self.depth_predictor.max_mono_vit_input_size
+            ) // 14 * 14
+        else:
+            resize_h = original_h // 14 * 14
+            resize_w = original_w // 14 * 14
+        flattened = rearrange(normalized, "b v c h w -> (b v) c h w")
+        flattened = F.interpolate(
+            flattened,
+            (resize_h, resize_w),
+            mode="bilinear",
+            align_corners=True,
+        )
+        layer_indices = {
+            "vits": [2, 5, 8, 11],
+            "vitb": [2, 5, 8, 11],
+            "vitl": [4, 11, 17, 23],
+        }[self.cfg.monodepth_vit_type]
+        with torch.no_grad(), torch.amp.autocast(
+            device_type="cuda", enabled=self.cfg.use_amp, dtype=torch.bfloat16
+        ):
+            raw_layers = self.depth_predictor.pretrained.get_intermediate_layers(
+                flattened, layer_indices, return_class_token=False
+            )
+            raw = raw_layers[self.cfg.semantic_feature_teacher_layer]
+            raw = rearrange(
+                raw,
+                "bv (h w) c -> bv c h w",
+                h=resize_h // 14,
+                w=resize_w // 14,
+            )
+        projected = self.semantic_feature_projector(raw.detach(), output_size)
+        return rearrange(projected, "(b v) c h w -> b v c h w", b=b, v=v)
 
     def forward(
         self,
@@ -1093,6 +1153,21 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         # init sh with input images
         sh[..., 0] = sh[..., 0] + RGB2SH(sh_input_images)
 
+        gaussian_semantic_features = None
+        if self.cfg.use_semantic_gaussian_features:
+            teacher_features = results_dict["raw_mono_features"][
+                self.cfg.semantic_feature_teacher_layer
+            ].detach()
+            projected_semantics = self.semantic_feature_projector(
+                teacher_features, output_size=(h, w)
+            )
+            gaussian_semantic_features = rearrange(
+                projected_semantics,
+                "(b v) c h w -> b (v h w) c",
+                b=b,
+                v=v,
+            )
+
         gaussians = Gaussians(
             rearrange(means, "b v r spp xyz -> b (v r spp) xyz"),
             rearrange(covariances, "b v r i j -> b (v r) i j"),
@@ -1100,7 +1175,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             rearrange(opacities, "b v r spp -> b (v r spp)"),
             scales=rearrange(scales, "b v r xyz -> b (v r) xyz"),
             rotations=rearrange(rotations, "b v r wxyz -> b (v r) wxyz"),
-            rotations_unnorm=rearrange(rotations_unnorm, "b v r wxyz -> b (v r) wxyz")
+            rotations_unnorm=rearrange(rotations_unnorm, "b v r wxyz -> b (v r) wxyz"),
+            semantic_features=gaussian_semantic_features,
         )
 
         # Dump visualizations if needed.

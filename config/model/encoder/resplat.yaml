@@ -121,6 +121,11 @@ semantic_init_proximity_radius: 4
 semantic_init_depth_gain: 0.1
 semantic_init_scale_gain: 0.5
 semantic_init_auxiliary_loss_weight: 0.25
+use_semantic_gaussian_features: false
+semantic_feature_dim: 16
+semantic_feature_teacher_layer: -1
+semantic_feature_projection_seed: 3407
+semantic_feature_projection_trainable: false
 
 # AMP
 use_amp: true

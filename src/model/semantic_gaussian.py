@@ -1,0 +1,37 @@
+"""Semantic feature projection for semantic-carrying Gaussians."""
+
+import torch
+import torch.nn.functional as F
+from torch import Tensor, nn
+
+
+class SemanticFeatureProjector(nn.Module):
+    """Deterministically compress dense teacher features without collapse."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int = 16,
+        seed: int = 3407,
+        trainable: bool = False,
+    ) -> None:
+        super().__init__()
+        if input_dim < output_dim or output_dim < 1:
+            raise ValueError("semantic dimensions must satisfy input >= output >= 1")
+        self.projection = nn.Conv2d(input_dim, output_dim, 1, bias=False)
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(seed)
+            nn.init.orthogonal_(self.projection.weight.flatten(1))
+        self.projection.weight.requires_grad = trainable
+
+    def forward(self, features: Tensor, output_size: tuple[int, int]) -> Tensor:
+        if features.ndim != 4 or features.shape[1] != self.projection.in_channels:
+            raise ValueError("teacher features must have shape [BV, C, H, W]")
+        projected = self.projection(features.float())
+        projected = F.interpolate(
+            projected,
+            size=output_size,
+            mode="bilinear",
+            align_corners=False,
+        )
+        return F.normalize(projected, dim=1, eps=1e-6)

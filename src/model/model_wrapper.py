@@ -1027,6 +1027,7 @@ class ModelWrapper(LightningModule):
                         (h, w),
                         depth_mode=None,
                     )
+
                 else:
                     output = self.decoder.forward(
                         gaussians,
@@ -1037,6 +1038,66 @@ class ModelWrapper(LightningModule):
                         (h, w),
                         depth_mode=None,
                     )
+
+        semantic_render_output = None
+        if gaussians.semantic_features is not None:
+            semantic_render_output, semantic_render_alpha = (
+                self.decoder.forward_features(
+                    gaussians,
+                    camera_poses,
+                    (
+                        batch["context"]["intrinsics"]
+                        if self.test_cfg.render_input_views
+                        else batch["target"]["intrinsics"]
+                    ),
+                    (
+                        batch["context"]["near"]
+                        if self.test_cfg.render_input_views
+                        else batch["target"]["near"]
+                    ),
+                    (
+                        batch["context"]["far"]
+                        if self.test_cfg.render_input_views
+                        else batch["target"]["far"]
+                    ),
+                    (h, w),
+                )
+            )
+            if not hasattr(self, "_logged_semantic_gaussian_render"):
+                print(
+                    "semantic Gaussian render: "
+                    f"gaussians={gaussians.semantic_features.shape[1]}, "
+                    f"dim={gaussians.semantic_features.shape[2]}, "
+                    f"render={tuple(semantic_render_output.shape)}, "
+                    f"feature_norm="
+                    f"{gaussians.semantic_features.norm(dim=-1).mean().item():.4f}, "
+                    f"alpha={semantic_render_alpha.mean().item():.4f}"
+                )
+                self._logged_semantic_gaussian_render = True
+            if not self.test_cfg.render_input_views:
+                target_semantic_features = (
+                    self.encoder.extract_semantic_teacher_features(
+                        batch["target"]["image"], (h, w)
+                    )
+                )
+                semantic_cosine = F.cosine_similarity(
+                    semantic_render_output,
+                    target_semantic_features,
+                    dim=2,
+                )
+                semantic_valid = semantic_render_alpha >= 0.1
+                semantic_cosine_score = semantic_cosine.masked_select(
+                    semantic_valid
+                ).mean()
+                rendered_feature_std = semantic_render_output.permute(
+                    0, 1, 3, 4, 2
+                ).reshape(-1, semantic_render_output.shape[2]).std(dim=0).mean()
+                self.test_step_outputs.setdefault("semantic_cosine", []).append(
+                    semantic_cosine_score.item()
+                )
+                self.test_step_outputs.setdefault(
+                    "semantic_render_feature_std", []
+                ).append(rendered_feature_std.item())
 
         # Render the pre-refinement Gaussians with exactly the same cameras.  This
         # is deliberately outside the benchmarked decoder block: it is a V2
