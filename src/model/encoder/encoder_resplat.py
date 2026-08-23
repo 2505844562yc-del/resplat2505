@@ -49,6 +49,7 @@ from ..semantic_initialization import (
 )
 from ..semantic_gaussian import (
     SemanticFeatureProjector,
+    apply_learned_ray_depth_residual,
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
     confidence_gate_semantic_gradient_feedback,
@@ -192,6 +193,10 @@ class EncoderReSplatCfg:
     semantic_geometry_scale_gain: float
     semantic_geometry_confidence_floor: float
     semantic_geometry_mean_mode: str
+    use_semantic_ray_depth_head: bool
+    semantic_ray_depth_hidden_channels: int
+    semantic_ray_depth_gain: float
+    semantic_ray_depth_confidence_floor: float
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -555,6 +560,14 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             nn.init.zeros_(self.update_head[-1].weight)
             nn.init.zeros_(self.update_head[-1].bias)
 
+            if (
+                self.cfg.use_semantic_ray_depth_head
+                and not self.cfg.use_semantic_state_refinement
+            ):
+                raise ValueError(
+                    "semantic ray-depth head requires semantic state refinement"
+                )
+
             if self.cfg.use_semantic_state_refinement:
                 if not self.cfg.use_semantic_gaussian_features:
                     raise ValueError(
@@ -617,6 +630,38 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 )
                 nn.init.zeros_(self.semantic_state_head[-1].weight)
                 nn.init.zeros_(self.semantic_state_head[-1].bias)
+
+                if self.cfg.use_semantic_ray_depth_head:
+                    if (
+                        not self.cfg.use_semantic_residual_feedback
+                        or self.cfg.semantic_residual_alignment != "raster_vjp"
+                    ):
+                        raise ValueError(
+                            "semantic ray-depth head requires raster_vjp feedback"
+                        )
+                    if self.cfg.semantic_ray_depth_hidden_channels < 1:
+                        raise ValueError(
+                            "semantic_ray_depth_hidden_channels must be positive"
+                        )
+                    if self.cfg.semantic_ray_depth_gain < 0:
+                        raise ValueError(
+                            "semantic_ray_depth_gain must be non-negative"
+                        )
+                    if not 0 <= self.cfg.semantic_ray_depth_confidence_floor < 1:
+                        raise ValueError(
+                            "semantic_ray_depth_confidence_floor must satisfy "
+                            "0 <= value < 1"
+                        )
+                    self.semantic_ray_depth_head = nn.Sequential(
+                        nn.Linear(
+                            channels + self.cfg.semantic_feature_dim + 2,
+                            self.cfg.semantic_ray_depth_hidden_channels,
+                        ),
+                        nn.GELU(),
+                        nn.Linear(self.cfg.semantic_ray_depth_hidden_channels, 1),
+                    )
+                    nn.init.zeros_(self.semantic_ray_depth_head[-1].weight)
+                    nn.init.zeros_(self.semantic_ray_depth_head[-1].bias)
 
             # ResNet-18 feature extractor (cached)
             self.update_feature = ResNetFeatureWarpper(
@@ -1405,6 +1450,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             semantic_direct_residual = None
             semantic_mean_residual = None
             semantic_scale_residual = None
+            semantic_gaussian_confidence = None
             if self.cfg.use_semantic_residual_feedback:
                 if self.cfg.semantic_residual_alignment == "source_grid":
                     with torch.no_grad():
@@ -1553,6 +1599,9 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     gaussian_gradient_feedback = semantic_gradient_feedback_features(
                         semantic_gradient.detach()
                     )
+                    semantic_gaussian_confidence = gaussian_gradient_feedback[
+                        ..., -2:-1
+                    ]
                     if self.cfg.semantic_vjp_direct_gain > 0:
                         semantic_direct_residual = gaussian_gradient_feedback[
                             ..., : self.cfg.semantic_feature_dim
@@ -2124,6 +2173,17 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     delta_semantic_state = self.semantic_state_head(
                         semantic_state_input
                     )
+                semantic_ray_depth_raw = None
+                if self.cfg.use_semantic_ray_depth_head:
+                    if semantic_residual_feedback is None:
+                        raise RuntimeError(
+                            "semantic ray-depth head requires Gaussian feedback"
+                        )
+                    semantic_ray_depth_raw = self.semantic_ray_depth_head(
+                        torch.cat(
+                            (tmp_state, semantic_residual_feedback), dim=-1
+                        )
+                    )
                 semantic_selective_output = None
                 if semantic_selective_features is not None:
                     flat_semantic_features = rearrange(
@@ -2140,6 +2200,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             if delta_semantic_state is not None:
                 delta_semantic_state = rearrange(
                     delta_semantic_state, "(b n) c -> b n c", b=b
+                )
+            if semantic_ray_depth_raw is not None:
+                semantic_ray_depth_raw = rearrange(
+                    semantic_ray_depth_raw, "(b n) c -> b n c", b=b
                 )
 
             if self.cfg.init_gaussian_multiple > 1 and not self.cfg.refine_same_num_points:
@@ -2174,6 +2238,15 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 if delta_semantic_state is not None:
                     delta_semantic_state = delta_semantic_state.repeat_interleave(
                         repeat, dim=1
+                    )
+                if semantic_ray_depth_raw is not None:
+                    semantic_ray_depth_raw = (
+                        semantic_ray_depth_raw.repeat_interleave(repeat, dim=1)
+                    )
+                    semantic_gaussian_confidence = (
+                        semantic_gaussian_confidence.repeat_interleave(
+                            repeat, dim=1
+                        )
                     )
                 if semantic_parameter_routes is not None:
                     semantic_parameter_routes = (
@@ -2225,6 +2298,43 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     semantic_parameter_routes,
                     gain=self.cfg.semantic_parameter_route_gain,
                 )
+
+            if semantic_ray_depth_raw is not None:
+                if prev_means.shape[1] % v != 0:
+                    raise RuntimeError(
+                        "semantic ray-depth head requires equal Gaussian counts "
+                        "per context view"
+                    )
+                points_per_view = prev_means.shape[1] // v
+                camera_origins = context["extrinsics"][
+                    ..., :3, 3
+                ].detach().repeat_interleave(points_per_view, dim=1)
+                ray_directions = prev_means.detach() - camera_origins
+                prev_means, learned_depth_delta = (
+                    apply_learned_ray_depth_residual(
+                        prev_means,
+                        prev_scales,
+                        ray_directions,
+                        semantic_ray_depth_raw,
+                        semantic_gaussian_confidence,
+                        gain=self.cfg.semantic_ray_depth_gain,
+                        confidence_floor=(
+                            self.cfg.semantic_ray_depth_confidence_floor
+                        ),
+                    )
+                )
+                if not hasattr(self, "_logged_semantic_ray_depth_stats"):
+                    local_scale = prev_scales.mean(dim=-1).clamp_min(1e-8)
+                    relative_depth_delta = (
+                        learned_depth_delta.squeeze(-1).abs() / local_scale
+                    )
+                    print(
+                        "semantic learned ray depth: "
+                        f"mean_relative={relative_depth_delta.mean().item():.7f}, "
+                        f"max_relative={relative_depth_delta.max().item():.7f}, "
+                        f"active={(learned_depth_delta != 0).float().mean().item():.4f}"
+                    )
+                    self._logged_semantic_ray_depth_stats = True
 
             if (
                 semantic_mean_residual is not None

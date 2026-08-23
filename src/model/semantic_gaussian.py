@@ -185,3 +185,44 @@ def project_geometry_feedback_to_rays(
         raise ValueError("ray_directions must match feedback")
     rays = F.normalize(ray_directions.float(), dim=-1, eps=1e-8)
     return (feedback.float() * rays).sum(dim=-1, keepdim=True) * rays
+
+
+def apply_learned_ray_depth_residual(
+    means: Tensor,
+    scales: Tensor,
+    ray_directions: Tensor,
+    raw_depth_residual: Tensor,
+    confidence: Tensor,
+    gain: float,
+    confidence_floor: float = 0.0,
+) -> tuple[Tensor, Tensor]:
+    """Apply a learned, confidence-gated displacement along source rays.
+
+    Returns the updated means and the signed world-space depth displacement.
+    """
+    if means.ndim != 3 or means.shape[-1] != 3 or scales.shape != means.shape:
+        raise ValueError("means and scales must share shape [B, G, 3]")
+    if ray_directions.shape != means.shape:
+        raise ValueError("ray_directions must match means")
+    expected_scalar_shape = means.shape[:-1] + (1,)
+    if raw_depth_residual.shape != expected_scalar_shape:
+        raise ValueError("raw_depth_residual must have shape [B, G, 1]")
+    if confidence.shape != expected_scalar_shape:
+        raise ValueError("confidence must have shape [B, G, 1]")
+    if gain < 0:
+        raise ValueError("gain must be non-negative")
+    if not 0 <= confidence_floor < 1:
+        raise ValueError("confidence_floor must satisfy 0 <= value < 1")
+
+    rays = F.normalize(ray_directions.float(), dim=-1, eps=1e-8)
+    confidence_gate = (
+        (confidence.float() - confidence_floor) / (1 - confidence_floor)
+    ).clamp(0, 1)
+    local_scale = scales.float().mean(dim=-1, keepdim=True)
+    depth_delta = (
+        gain
+        * local_scale
+        * torch.tanh(raw_depth_residual.float())
+        * confidence_gate
+    )
+    return means.float() + depth_delta * rays, depth_delta

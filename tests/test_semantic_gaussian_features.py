@@ -4,6 +4,7 @@ import torch
 
 from src.model.semantic_gaussian import (
     SemanticFeatureProjector,
+    apply_learned_ray_depth_residual,
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
     confidence_gate_semantic_gradient_feedback,
@@ -210,3 +211,48 @@ class SemanticGeometryRayProjectionTest(unittest.TestCase):
             project_geometry_feedback_to_rays(
                 torch.randn(1, 4, 3), torch.randn(1, 4, 2)
             )
+
+
+class LearnedRayDepthResidualTest(unittest.TestCase):
+    def test_zero_raw_residual_is_exact_identity(self):
+        means = torch.randn(1, 5, 3)
+        scales = torch.rand_like(means) + 0.1
+        updated, delta = apply_learned_ray_depth_residual(
+            means,
+            scales,
+            torch.randn_like(means),
+            torch.zeros(1, 5, 1),
+            torch.ones(1, 5, 1),
+            gain=0.2,
+        )
+        self.assertTrue(torch.equal(updated, means))
+        self.assertTrue(torch.equal(delta, torch.zeros_like(delta)))
+
+    def test_displacement_is_bounded_and_parallel_to_ray(self):
+        means = torch.zeros(1, 1, 3)
+        scales = torch.full_like(means, 2.0)
+        updated, delta = apply_learned_ray_depth_residual(
+            means,
+            scales,
+            torch.tensor([[[0.0, 0.0, 10.0]]]),
+            torch.tensor([[[1000.0]]]),
+            torch.ones(1, 1, 1),
+            gain=0.1,
+        )
+        self.assertTrue(torch.allclose(delta, torch.tensor([[[0.2]]])))
+        self.assertTrue(
+            torch.allclose(updated, torch.tensor([[[0.0, 0.0, 0.2]]]))
+        )
+
+    def test_low_confidence_is_suppressed(self):
+        means = torch.randn(1, 2, 3)
+        updated, _ = apply_learned_ray_depth_residual(
+            means,
+            torch.ones_like(means),
+            torch.randn_like(means),
+            torch.ones(1, 2, 1),
+            torch.full((1, 2, 1), 0.1),
+            gain=0.2,
+            confidence_floor=0.25,
+        )
+        self.assertTrue(torch.equal(updated, means))

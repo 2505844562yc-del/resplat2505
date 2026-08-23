@@ -677,7 +677,10 @@ class ModelWrapper(LightningModule):
             self.log(f"loss/depth_smooth", depth_smooth_loss)
             total_loss = total_loss + depth_smooth_loss
 
-        if self.encoder.cfg.use_semantic_state_refinement:
+        if (
+            self.encoder.cfg.use_semantic_state_refinement
+            and self.encoder.cfg.semantic_feature_loss_weight > 0
+        ):
             semantic_render, semantic_alpha = self.decoder.forward_features(
                 gaussians,
                 batch["target"]["extrinsics"],

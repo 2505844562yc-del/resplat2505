@@ -138,6 +138,10 @@ semantic_geometry_mean_gain: 0.0
 semantic_geometry_scale_gain: 0.0
 semantic_geometry_confidence_floor: 0.0
 semantic_geometry_mean_mode: full_3d
+use_semantic_ray_depth_head: false
+semantic_ray_depth_hidden_channels: 256
+semantic_ray_depth_gain: 0.1
+semantic_ray_depth_confidence_floor: 0.0
 
 # AMP
 use_amp: true
