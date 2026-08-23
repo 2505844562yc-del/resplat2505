@@ -110,3 +110,78 @@ def semantic_gradient_feedback_features(
     return torch.cat(
         (direction * relative_magnitude, relative_magnitude, active), dim=-1
     )
+
+
+def apply_semantic_geometry_vjp(
+    means: Tensor,
+    scales: Tensor,
+    mean_feedback: Tensor | None,
+    scale_feedback: Tensor | None,
+    mean_gain: float = 0.0,
+    scale_gain: float = 0.0,
+    min_scale: float = 1e-6,
+) -> tuple[Tensor, Tensor]:
+    """Apply bounded, scene-scale-aware semantic VJP geometry corrections."""
+    if means.ndim != 3 or scales.shape != means.shape:
+        raise ValueError("means and scales must share shape [B, G, 3]")
+    if mean_feedback is not None and mean_feedback.shape != means.shape:
+        raise ValueError("mean_feedback must match means")
+    if scale_feedback is not None and scale_feedback.shape != scales.shape:
+        raise ValueError("scale_feedback must match scales")
+    if mean_gain < 0 or scale_gain < 0:
+        raise ValueError("semantic geometry gains must be non-negative")
+    if min_scale <= 0:
+        raise ValueError("min_scale must be positive")
+
+    updated_means = means.float()
+    updated_scales = scales.float()
+    if mean_feedback is not None and mean_gain > 0:
+        local_scale = updated_scales.mean(dim=-1, keepdim=True)
+        updated_means = updated_means + (
+            mean_gain * local_scale * torch.tanh(mean_feedback.float())
+        )
+    if scale_feedback is not None and scale_gain > 0:
+        log_scale_delta = scale_gain * torch.tanh(scale_feedback.float())
+        updated_scales = updated_scales * torch.exp(log_scale_delta)
+    return updated_means, updated_scales.clamp_min(min_scale)
+
+
+def confidence_gate_semantic_gradient_feedback(
+    feedback: Tensor,
+    confidence_floor: float,
+) -> Tensor:
+    """Return the directional channels after smooth confidence thresholding.
+
+    ``feedback`` is expected to contain directional channels followed by the
+    relative gradient magnitude and active flag produced by
+    :func:`semantic_gradient_feedback_features`. A zero floor preserves the
+    original directional residual exactly.
+    """
+    if feedback.ndim != 3 or feedback.shape[-1] < 3:
+        raise ValueError("feedback must have shape [B, G, D + 2]")
+    if not 0 <= confidence_floor < 1:
+        raise ValueError("confidence_floor must satisfy 0 <= value < 1")
+    directional = feedback[..., :-2]
+    confidence = feedback[..., -2:-1]
+    gated_confidence = (
+        (confidence - confidence_floor) / (1 - confidence_floor)
+    ).clamp(0, 1)
+    confidence_ratio = torch.where(
+        confidence > 0,
+        gated_confidence / confidence.clamp_min(1e-8),
+        torch.zeros_like(confidence),
+    )
+    return directional * confidence_ratio
+
+
+def project_geometry_feedback_to_rays(
+    feedback: Tensor,
+    ray_directions: Tensor,
+) -> Tensor:
+    """Restrict a world-space geometry correction to source-camera rays."""
+    if feedback.ndim != 3 or feedback.shape[-1] != 3:
+        raise ValueError("feedback must have shape [B, G, 3]")
+    if ray_directions.shape != feedback.shape:
+        raise ValueError("ray_directions must match feedback")
+    rays = F.normalize(ray_directions.float(), dim=-1, eps=1e-8)
+    return (feedback.float() * rays).sum(dim=-1, keepdim=True) * rays

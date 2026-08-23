@@ -133,6 +133,11 @@ use_semantic_residual_feedback: false
 semantic_residual_alpha_floor: 0.1
 semantic_residual_alignment: source_grid
 semantic_vjp_direct_gain: 0.0
+use_semantic_geometry_vjp: false
+semantic_geometry_mean_gain: 0.0
+semantic_geometry_scale_gain: 0.0
+semantic_geometry_confidence_floor: 0.0
+semantic_geometry_mean_mode: full_3d
 
 # AMP
 use_amp: true

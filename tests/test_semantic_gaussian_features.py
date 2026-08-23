@@ -4,7 +4,10 @@ import torch
 
 from src.model.semantic_gaussian import (
     SemanticFeatureProjector,
+    apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
+    confidence_gate_semantic_gradient_feedback,
+    project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
     semantic_render_residual_features,
 )
@@ -115,3 +118,95 @@ class SemanticGradientFeedbackFeaturesTest(unittest.TestCase):
     def test_invalid_gradient_is_rejected(self):
         with self.assertRaises(ValueError):
             semantic_gradient_feedback_features(torch.randn(2, 3, 4, 5))
+
+
+class SemanticGeometryVJPTest(unittest.TestCase):
+    def test_zero_gains_are_exact_identity(self):
+        means = torch.randn(1, 5, 3)
+        scales = torch.rand(1, 5, 3) + 0.1
+        updated_means, updated_scales = apply_semantic_geometry_vjp(
+            means,
+            scales,
+            torch.randn_like(means),
+            torch.randn_like(scales),
+        )
+        self.assertTrue(torch.equal(updated_means, means))
+        self.assertTrue(torch.equal(updated_scales, scales))
+
+    def test_mean_step_is_bounded_by_local_scale(self):
+        means = torch.zeros(1, 2, 3)
+        scales = torch.tensor([[[2.0, 2.0, 2.0], [1.0, 2.0, 3.0]]])
+        updated_means, _ = apply_semantic_geometry_vjp(
+            means,
+            scales,
+            torch.full_like(means, 1000.0),
+            None,
+            mean_gain=0.1,
+        )
+        self.assertTrue(torch.all(updated_means.abs() <= 0.2 + 1e-6))
+
+    def test_scale_step_is_multiplicatively_bounded(self):
+        means = torch.zeros(1, 2, 3)
+        scales = torch.ones_like(means)
+        _, updated_scales = apply_semantic_geometry_vjp(
+            means,
+            scales,
+            None,
+            torch.full_like(scales, 1000.0),
+            scale_gain=0.2,
+        )
+        self.assertTrue(
+            torch.allclose(updated_scales, torch.full_like(scales, torch.exp(torch.tensor(0.2))))
+        )
+
+    def test_invalid_feedback_shape_is_rejected(self):
+        with self.assertRaises(ValueError):
+            apply_semantic_geometry_vjp(
+                torch.randn(1, 4, 3),
+                torch.rand(1, 4, 3),
+                torch.randn(1, 4, 2),
+                None,
+                mean_gain=0.1,
+            )
+
+
+class SemanticGeometryConfidenceGateTest(unittest.TestCase):
+    def test_zero_floor_preserves_directional_feedback(self):
+        gradient = torch.randn(1, 8, 3)
+        feedback = semantic_gradient_feedback_features(gradient)
+        gated = confidence_gate_semantic_gradient_feedback(feedback, 0.0)
+        self.assertTrue(torch.allclose(gated, feedback[..., :-2], atol=1e-6))
+
+    def test_below_floor_is_suppressed(self):
+        feedback = torch.tensor([[[0.1, 0.0, 0.0, 0.1, 1.0]]])
+        gated = confidence_gate_semantic_gradient_feedback(feedback, 0.25)
+        self.assertTrue(torch.equal(gated, torch.zeros_like(gated)))
+
+    def test_invalid_floor_is_rejected(self):
+        with self.assertRaises(ValueError):
+            confidence_gate_semantic_gradient_feedback(
+                torch.randn(1, 2, 5), 1.0
+            )
+
+
+class SemanticGeometryRayProjectionTest(unittest.TestCase):
+    def test_removes_tangential_feedback(self):
+        feedback = torch.tensor([[[2.0, 3.0, 4.0]]])
+        rays = torch.tensor([[[1.0, 0.0, 0.0]]])
+        projected = project_geometry_feedback_to_rays(feedback, rays)
+        self.assertTrue(
+            torch.equal(projected, torch.tensor([[[2.0, 0.0, 0.0]]]))
+        )
+
+    def test_projection_is_invariant_to_ray_length(self):
+        feedback = torch.randn(2, 6, 3)
+        rays = torch.randn_like(feedback)
+        first = project_geometry_feedback_to_rays(feedback, rays)
+        second = project_geometry_feedback_to_rays(feedback, rays * 100)
+        self.assertTrue(torch.allclose(first, second, atol=1e-6))
+
+    def test_shape_mismatch_is_rejected(self):
+        with self.assertRaises(ValueError):
+            project_geometry_feedback_to_rays(
+                torch.randn(1, 4, 3), torch.randn(1, 4, 2)
+            )

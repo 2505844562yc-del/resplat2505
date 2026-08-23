@@ -49,7 +49,10 @@ from ..semantic_initialization import (
 )
 from ..semantic_gaussian import (
     SemanticFeatureProjector,
+    apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
+    confidence_gate_semantic_gradient_feedback,
+    project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
     semantic_render_residual_features,
 )
@@ -184,6 +187,11 @@ class EncoderReSplatCfg:
     semantic_residual_alpha_floor: float
     semantic_residual_alignment: str
     semantic_vjp_direct_gain: float
+    use_semantic_geometry_vjp: bool
+    semantic_geometry_mean_gain: float
+    semantic_geometry_scale_gain: float
+    semantic_geometry_confidence_floor: float
+    semantic_geometry_mean_mode: str
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -574,6 +582,32 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     ):
                         raise ValueError(
                             "direct semantic correction requires raster_vjp alignment"
+                        )
+                    if (
+                        self.cfg.semantic_geometry_mean_gain < 0
+                        or self.cfg.semantic_geometry_scale_gain < 0
+                    ):
+                        raise ValueError(
+                            "semantic geometry VJP gains must be non-negative"
+                        )
+                    if not 0 <= self.cfg.semantic_geometry_confidence_floor < 1:
+                        raise ValueError(
+                            "semantic_geometry_confidence_floor must satisfy "
+                            "0 <= value < 1"
+                        )
+                    if self.cfg.semantic_geometry_mean_mode not in {
+                        "full_3d",
+                        "ray_depth",
+                    }:
+                        raise ValueError(
+                            "semantic_geometry_mean_mode must be full_3d or ray_depth"
+                        )
+                    if (
+                        self.cfg.use_semantic_geometry_vjp
+                        and self.cfg.semantic_residual_alignment != "raster_vjp"
+                    ):
+                        raise ValueError(
+                            "semantic geometry VJP requires raster_vjp alignment"
                         )
                     semantic_head_channels += self.cfg.semantic_feature_dim + 2
                 self.semantic_state_head = nn.Sequential(
@@ -1369,6 +1403,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             semantic_selective_active = None
             semantic_residual_feedback = None
             semantic_direct_residual = None
+            semantic_mean_residual = None
+            semantic_scale_residual = None
             if self.cfg.use_semantic_residual_feedback:
                 if self.cfg.semantic_residual_alignment == "source_grid":
                     with torch.no_grad():
@@ -1406,23 +1442,80 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         def clone_tensor(value):
                             return None if value is None else value.detach().clone()
 
+                        mean_probe = None
+                        log_scale_probe = None
+                        feedback_means = clone_tensor(prev_gaussians.means)
+                        feedback_scales = clone_tensor(prev_gaussians.scales)
+                        feedback_covariances = clone_tensor(
+                            prev_gaussians.covariances
+                        )
+                        feedback_rotations = clone_tensor(
+                            prev_gaussians.rotations
+                        )
+                        if self.cfg.use_semantic_geometry_vjp:
+                            mean_probe = feedback_means.requires_grad_(True)
+                            log_scale_probe = (
+                                feedback_scales.clamp_min(1e-8).log()
+                            ).requires_grad_(True)
+                            feedback_scales = log_scale_probe.exp()
+                            if feedback_rotations is None:
+                                feedback_rotations = clone_tensor(
+                                    prev_gaussians.rotations_unnorm
+                                )
+                                feedback_rotations = feedback_rotations / (
+                                    feedback_rotations.norm(
+                                        dim=-1, keepdim=True
+                                    ).clamp_min(1e-8)
+                                )
+                            feedback_covariances = build_covariance(
+                                feedback_scales, feedback_rotations
+                            )
+                            feedback_covariances = rearrange(
+                                feedback_covariances,
+                                "b (v hw) x y -> b v hw x y",
+                                v=v,
+                            )
+                            source_rotations = (
+                                context["extrinsics"][..., :3, :3]
+                                .detach()
+                                .clone()
+                                .unsqueeze(2)
+                            )
+                            feedback_covariances = (
+                                source_rotations
+                                @ feedback_covariances
+                                @ source_rotations.transpose(-1, -2)
+                            )
+                            feedback_covariances = rearrange(
+                                feedback_covariances,
+                                "b v hw x y -> b (v hw) x y",
+                            )
+
                         feedback_gaussians = Gaussians(
-                            clone_tensor(prev_gaussians.means),
-                            clone_tensor(prev_gaussians.covariances),
+                            feedback_means,
+                            feedback_covariances,
                             clone_tensor(prev_gaussians.harmonics),
                             clone_tensor(prev_gaussians.opacities),
-                            scales=clone_tensor(prev_gaussians.scales),
-                            rotations=clone_tensor(prev_gaussians.rotations),
+                            scales=feedback_scales,
+                            rotations=feedback_rotations,
                             rotations_unnorm=clone_tensor(
                                 prev_gaussians.rotations_unnorm
                             ),
                         )
+                        feedback_extrinsics = (
+                            context["extrinsics"].detach().clone()
+                        )
+                        feedback_intrinsics = (
+                            context["intrinsics"].detach().clone()
+                        )
+                        feedback_near = context["near"].detach().clone()
+                        feedback_far = context["far"].detach().clone()
                         semantic_render, semantic_alpha = renderer.forward_features(
                             feedback_gaussians,
-                            context["extrinsics"],
-                            context["intrinsics"],
-                            context["near"],
-                            context["far"],
+                            feedback_extrinsics,
+                            feedback_intrinsics,
+                            feedback_near,
+                            feedback_far,
                             (state_h, state_w),
                             features=semantic_probe,
                         )
@@ -1447,12 +1540,16 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         semantic_context_loss = (
                             context_cosine_error * visibility
                         ).sum() / visibility.sum().clamp_min(1.0)
-                        semantic_gradient = torch.autograd.grad(
+                        gradient_inputs = [semantic_probe]
+                        if self.cfg.use_semantic_geometry_vjp:
+                            gradient_inputs.extend((mean_probe, log_scale_probe))
+                        semantic_gradients = torch.autograd.grad(
                             semantic_context_loss,
-                            semantic_probe,
+                            gradient_inputs,
                             create_graph=False,
                             retain_graph=False,
-                        )[0]
+                        )
+                        semantic_gradient = semantic_gradients[0]
                     gaussian_gradient_feedback = semantic_gradient_feedback_features(
                         semantic_gradient.detach()
                     )
@@ -1460,14 +1557,65 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         semantic_direct_residual = gaussian_gradient_feedback[
                             ..., : self.cfg.semantic_feature_dim
                         ]
+                    if self.cfg.use_semantic_geometry_vjp:
+                        mean_gradient_feedback = (
+                            semantic_gradient_feedback_features(
+                                semantic_gradients[1].detach()
+                            )
+                        )
+                        scale_gradient_feedback = (
+                            semantic_gradient_feedback_features(
+                                semantic_gradients[2].detach()
+                            )
+                        )
+                        semantic_mean_residual = (
+                            confidence_gate_semantic_gradient_feedback(
+                                mean_gradient_feedback,
+                                self.cfg.semantic_geometry_confidence_floor,
+                            )
+                        )
+                        semantic_scale_residual = (
+                            confidence_gate_semantic_gradient_feedback(
+                                scale_gradient_feedback,
+                                self.cfg.semantic_geometry_confidence_floor,
+                            )
+                        )
+                        if self.cfg.semantic_geometry_mean_mode == "ray_depth":
+                            if prev_means.shape[1] % v != 0:
+                                raise RuntimeError(
+                                    "ray-depth semantic geometry requires equal "
+                                    "Gaussian counts per context view"
+                                )
+                            points_per_view = prev_means.shape[1] // v
+                            camera_origins = context["extrinsics"][
+                                ..., :3, 3
+                            ].detach().repeat_interleave(
+                                points_per_view, dim=1
+                            )
+                            semantic_mean_residual = (
+                                project_geometry_feedback_to_rays(
+                                    semantic_mean_residual,
+                                    prev_means.detach() - camera_origins,
+                                )
+                            )
+                        if not hasattr(
+                            self, "_logged_semantic_geometry_confidence_stats"
+                        ):
+                            mean_confidence = mean_gradient_feedback[..., -2]
+                            floor = self.cfg.semantic_geometry_confidence_floor
+                            print(
+                                "semantic geometry confidence: "
+                                f"mean={mean_confidence.mean().item():.4f}, "
+                                f">=floor={(mean_confidence >= floor).float().mean().item():.4f}, "
+                                f"floor={floor:.4f}"
+                            )
+                            self._logged_semantic_geometry_confidence_stats = True
                     semantic_residual_feedback = gaussian_gradient_feedback
                     semantic_residual_feedback = rearrange(
                         semantic_residual_feedback,
                         "b g c -> (b g) c",
                     )
-                    if self.training and not hasattr(
-                        self, "_logged_semantic_vjp_stats"
-                    ):
+                    if not hasattr(self, "_logged_semantic_vjp_stats"):
                         print(
                             "semantic raster VJP: "
                             f"context_loss={semantic_context_loss.item():.6f}, "
@@ -2077,6 +2225,40 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     semantic_parameter_routes,
                     gain=self.cfg.semantic_parameter_route_gain,
                 )
+
+            if (
+                semantic_mean_residual is not None
+                or semantic_scale_residual is not None
+            ):
+                geometry_means_before = prev_means
+                geometry_scales_before = prev_scales
+                prev_means, prev_scales = apply_semantic_geometry_vjp(
+                    prev_means,
+                    prev_scales,
+                    semantic_mean_residual,
+                    semantic_scale_residual,
+                    mean_gain=self.cfg.semantic_geometry_mean_gain,
+                    scale_gain=self.cfg.semantic_geometry_scale_gain,
+                    min_scale=self.cfg.gaussian_adapter.clamp_min_scale,
+                )
+                if not hasattr(self, "_logged_semantic_geometry_vjp_stats"):
+                    local_scale = geometry_scales_before.mean(
+                        dim=-1
+                    ).clamp_min(1e-8)
+                    relative_displacement = (
+                        (prev_means - geometry_means_before).norm(dim=-1)
+                        / local_scale
+                    ).mean()
+                    log_scale_change = (
+                        prev_scales.clamp_min(1e-8).log()
+                        - geometry_scales_before.clamp_min(1e-8).log()
+                    ).abs().mean()
+                    print(
+                        "semantic geometry VJP: "
+                        f"relative_displacement={relative_displacement.item():.6f}, "
+                        f"log_scale_change={log_scale_change.item():.6f}"
+                    )
+                    self._logged_semantic_geometry_vjp_stats = True
 
             prev_means = (prev_means + delta_means)
 
