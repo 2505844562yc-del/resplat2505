@@ -5,6 +5,19 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 
+SEMANTIC_JOINT_HEAD_NAMES = (
+    "encoder.semantic_state_head",
+    "encoder.semantic_uncertainty_head",
+    "encoder.semantic_support_head",
+    "encoder.semantic_ray_depth_head",
+)
+
+
+def semantic_joint_parameter_trainable(name: str) -> bool:
+    """Return whether a model parameter belongs to a promoted semantic head."""
+    return any(token in name for token in SEMANTIC_JOINT_HEAD_NAMES)
+
+
 class SemanticFeatureProjector(nn.Module):
     """Deterministically compress dense teacher features without collapse."""
 

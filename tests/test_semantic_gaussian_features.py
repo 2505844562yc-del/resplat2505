@@ -14,9 +14,30 @@ from src.model.semantic_gaussian import (
     normalize_gaussian_visibility_support,
     project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
+    semantic_joint_parameter_trainable,
     semantic_render_residual_features,
     semantic_uncertainty_components,
 )
+
+
+class SemanticJointParameterSelectionTest(unittest.TestCase):
+    def test_all_promoted_heads_are_selected(self):
+        for name in (
+            "encoder.semantic_state_head.0.weight",
+            "encoder.semantic_uncertainty_head.2.bias",
+            "encoder.semantic_support_head.0.weight",
+            "encoder.semantic_ray_depth_head.2.weight",
+        ):
+            self.assertTrue(semantic_joint_parameter_trainable(name))
+
+    def test_backbone_and_projector_remain_frozen(self):
+        for name in (
+            "encoder.update_head.0.weight",
+            "encoder.depth_predictor.transformer.weight",
+            "encoder.semantic_feature_projector.projection.weight",
+            "decoder.some_parameter",
+        ):
+            self.assertFalse(semantic_joint_parameter_trainable(name))
 
 
 class SemanticFeatureProjectorTest(unittest.TestCase):

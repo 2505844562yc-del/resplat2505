@@ -214,6 +214,7 @@ class EncoderReSplatCfg:
     semantic_ray_depth_gain: float
     semantic_ray_depth_confidence_floor: float
     semantic_ray_depth_regularization_weight: float
+    semantic_joint_train_new_heads: bool
 
     # AMP (automatic mixed precision)
     use_amp: bool
@@ -597,6 +598,18 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             ):
                 raise ValueError(
                     "semantic support refinement requires semantic uncertainty"
+                )
+            if self.cfg.semantic_joint_train_new_heads and not all(
+                (
+                    self.cfg.use_semantic_state_refinement,
+                    self.cfg.use_semantic_uncertainty_refinement,
+                    self.cfg.use_semantic_support_refinement,
+                    self.cfg.use_semantic_ray_depth_head,
+                )
+            ):
+                raise ValueError(
+                    "joint semantic training requires state, uncertainty, "
+                    "support, and ray-depth heads"
                 )
 
             if self.cfg.use_semantic_state_refinement:

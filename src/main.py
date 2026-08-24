@@ -36,6 +36,7 @@ with install_import_hook(
     from src.model.decoder import get_decoder
     from src.model.encoder import get_encoder
     from src.model.model_wrapper import ModelWrapper
+    from src.model.semantic_gaussian import semantic_joint_parameter_trainable
 
 
 def cyan(text: str) -> str:
@@ -289,7 +290,9 @@ def train(cfg_dict: DictConfig):
         if cfg.model.encoder.num_refine > 0:
             print('train refine only')
             for name, params in model_wrapper.named_parameters():
-                if cfg.model.encoder.use_semantic_ray_depth_head:
+                if cfg.model.encoder.semantic_joint_train_new_heads:
+                    trainable = semantic_joint_parameter_trainable(name)
+                elif cfg.model.encoder.use_semantic_ray_depth_head:
                     trainable = 'encoder.semantic_ray_depth_head' in name
                 elif cfg.model.encoder.use_semantic_support_refinement:
                     trainable = 'encoder.semantic_support_head' in name

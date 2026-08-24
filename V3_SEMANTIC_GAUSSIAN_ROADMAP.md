@@ -163,7 +163,7 @@ This is the current validated semantic core.
 
 ### Stage 7 — Joint recurrent semantic-structure refinement and paper ablations
 
-**Status: pending.**
+**Status: engineering implementation complete; long training and paper ablations pending.**
 
 Activate the coherent recurrent update
 
@@ -180,6 +180,12 @@ Use staged optimization:
 3. Optionally unfreeze only the final ReSplat updater block if the frozen-base
    model saturates; do not retrain the entire encoder initially.
 
+The dedicated `v3_semantic_joint_dl3dv` configuration now activates the complete
+chain while the base ReSplat configuration remains disabled. A 50-step screen
+jointly optimized 623 K new-head parameters over 50 distinct training scenes with
+no material RGB regression. This validates the implementation, not the final
+paper performance.
+
 Required matched ablations:
 
 1. Official ReSplat.
@@ -195,17 +201,20 @@ selectivity, parameter-update magnitudes, memory, and inference time.
 
 ## 5. Current position and immediate execution order
 
-The modular mainline is **complete through Stage 6**. Stages 1–6 now form one
+The modular mainline is **complete through Stage 6**, and the Stage-7 integrated
+training path is implemented and engineering-validated. Stages 1–6 form one
 causal chain from semantic-carrying Gaussians to conservative semantic-conditioned
 updates of semantic state, uncertainty, support, and source-ray position.
 
 The correct execution order from the current commit is:
 
-1. Build one dedicated V3 main experiment configuration that activates the
-   retained components while base ReSplat defaults remain off.
-2. Run a short multi-scene engineering validation of the full chain.
-3. Jointly train the new semantic heads without unfreezing the ReSplat backbone.
-4. Only then start longer matched training and final ablations.
+1. Run a longer multi-scene training schedule for the dedicated V3 configuration
+   without unfreezing the ReSplat backbone.
+2. Execute the matched Stage 1–6 ablation table on the same data split and budget.
+3. Tune loss weights only from validation evidence, especially the trade-off
+   between semantic cosine and uncertainty calibration.
+4. Unfreeze the final ReSplat updater block only if the frozen-backbone model
+   clearly saturates.
 
 This route preserves all completed useful work and stops short-run noise from
 continually changing the architecture.
