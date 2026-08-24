@@ -133,6 +133,13 @@ use_semantic_residual_feedback: false
 semantic_residual_alpha_floor: 0.1
 semantic_residual_alignment: source_grid
 semantic_vjp_direct_gain: 0.0
+use_semantic_uncertainty_refinement: false
+semantic_uncertainty_hidden_channels: 128
+semantic_uncertainty_residual_gain: 0.25
+semantic_uncertainty_need_floor: 0.25
+semantic_uncertainty_reliability_floor: 0.05
+semantic_uncertainty_support_relative_scale: 4.0
+semantic_uncertainty_loss_weight: 0.0
 use_semantic_geometry_vjp: false
 semantic_geometry_mean_gain: 0.0
 semantic_geometry_scale_gain: 0.0

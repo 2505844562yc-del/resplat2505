@@ -289,7 +289,9 @@ def train(cfg_dict: DictConfig):
         if cfg.model.encoder.num_refine > 0:
             print('train refine only')
             for name, params in model_wrapper.named_parameters():
-                if cfg.model.encoder.use_semantic_ray_depth_head:
+                if cfg.model.encoder.use_semantic_uncertainty_refinement:
+                    trainable = 'encoder.semantic_uncertainty_head' in name
+                elif cfg.model.encoder.use_semantic_ray_depth_head:
                     trainable = 'encoder.semantic_ray_depth_head' in name
                 elif cfg.model.encoder.use_semantic_state_refinement:
                     trainable = 'encoder.semantic_state_head' in name

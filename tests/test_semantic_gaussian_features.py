@@ -7,10 +7,13 @@ from src.model.semantic_gaussian import (
     apply_learned_ray_depth_residual,
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
+    apply_semantic_uncertainty_residual,
     confidence_gate_semantic_gradient_feedback,
+    normalize_gaussian_visibility_support,
     project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
     semantic_render_residual_features,
+    semantic_uncertainty_components,
 )
 
 
@@ -256,3 +259,53 @@ class LearnedRayDepthResidualTest(unittest.TestCase):
             confidence_floor=0.25,
         )
         self.assertTrue(torch.equal(updated, means))
+
+
+class SemanticUncertaintyTest(unittest.TestCase):
+    def test_support_normalization_is_scale_invariant(self):
+        support = torch.tensor([[1.0, 2.0, 4.0]])
+        first = normalize_gaussian_visibility_support(support)
+        second = normalize_gaussian_visibility_support(support * 1000)
+        self.assertEqual(first.shape, (1, 3, 1))
+        self.assertTrue(torch.allclose(first, second, atol=1e-6))
+
+    def test_need_and_reliability_are_separate(self):
+        # Directional channels, relative magnitude, active.
+        feedback = torch.tensor(
+            [[[0.0, 0.0, 0.10, 1.0], [0.0, 0.0, 0.70, 1.0]]]
+        )
+        support = torch.tensor([[[1.0], [0.0]]])
+        need, reliable, uncertainty, priority = semantic_uncertainty_components(
+            feedback,
+            support,
+            need_floor=0.25,
+            reliability_floor=0.05,
+        )
+        self.assertEqual(need[0, 0, 0].item(), 0.0)
+        self.assertGreater(need[0, 1, 0].item(), 0.0)
+        self.assertGreater(reliable[0, 0, 0].item(), 0.0)
+        self.assertEqual(reliable[0, 1, 0].item(), 0.0)
+        self.assertTrue(torch.equal(priority, torch.zeros_like(priority)))
+        self.assertGreater(uncertainty[0, 1, 0].item(), 0.99)
+
+    def test_zero_learned_residual_preserves_deterministic_uncertainty(self):
+        base = torch.rand(2, 7, 1)
+        output = apply_semantic_uncertainty_residual(
+            base,
+            torch.zeros_like(base),
+            torch.rand_like(base),
+            gain=0.25,
+        )
+        self.assertTrue(torch.equal(output, base))
+
+    def test_uncertainty_calibration_is_bounded_and_reliability_gated(self):
+        base = torch.tensor([[[0.5], [0.5]]])
+        output = apply_semantic_uncertainty_residual(
+            base,
+            torch.tensor([[[1000.0], [-1000.0]]]),
+            torch.tensor([[[1.0], [0.0]]]),
+            gain=0.25,
+        )
+        self.assertTrue(torch.all((0 <= output) & (output <= 1)))
+        self.assertTrue(torch.allclose(output[0, 0], torch.tensor([0.75])))
+        self.assertTrue(torch.equal(output[0, 1], base[0, 1]))

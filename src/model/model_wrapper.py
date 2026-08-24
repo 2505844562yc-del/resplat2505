@@ -679,7 +679,13 @@ class ModelWrapper(LightningModule):
 
         if (
             self.encoder.cfg.use_semantic_state_refinement
-            and self.encoder.cfg.semantic_feature_loss_weight > 0
+            and (
+                self.encoder.cfg.semantic_feature_loss_weight > 0
+                or (
+                    self.encoder.cfg.use_semantic_uncertainty_refinement
+                    and self.encoder.cfg.semantic_uncertainty_loss_weight > 0
+                )
+            )
         ):
             semantic_render, semantic_alpha = self.decoder.forward_features(
                 gaussians,
@@ -697,25 +703,73 @@ class ModelWrapper(LightningModule):
                 semantic_render, semantic_teacher, dim=2
             )
             semantic_valid = semantic_alpha >= 0.1
-            semantic_feature_loss = (
-                1.0 - semantic_cosine.masked_select(semantic_valid).mean()
-            )
             semantic_render_std = semantic_render.permute(
                 0, 1, 3, 4, 2
             ).reshape(-1, semantic_render.shape[2]).std(dim=0).mean()
-            self.log("loss/semantic_feature", semantic_feature_loss)
-            self.log("semantic/target_cosine", 1.0 - semantic_feature_loss)
             self.log("semantic/render_feature_std", semantic_render_std)
-            total_loss = total_loss + (
-                self.encoder.cfg.semantic_feature_loss_weight
-                * semantic_feature_loss
-            )
+            if self.encoder.cfg.semantic_feature_loss_weight > 0:
+                semantic_feature_loss = (
+                    1.0 - semantic_cosine.masked_select(semantic_valid).mean()
+                )
+                self.log("loss/semantic_feature", semantic_feature_loss)
+                self.log("semantic/target_cosine", 1.0 - semantic_feature_loss)
+                total_loss = total_loss + (
+                    self.encoder.cfg.semantic_feature_loss_weight
+                    * semantic_feature_loss
+                )
+
+            if (
+                self.encoder.cfg.use_semantic_uncertainty_refinement
+                and self.encoder.cfg.semantic_uncertainty_loss_weight > 0
+            ):
+                if gaussians.semantic_uncertainty is None:
+                    raise RuntimeError(
+                        "semantic uncertainty loss requires Gaussian uncertainty"
+                    )
+                rendered_uncertainty, uncertainty_alpha = (
+                    self.decoder.forward_features(
+                        gaussians,
+                        batch["target"]["extrinsics"],
+                        batch["target"]["intrinsics"],
+                        batch["target"]["near"],
+                        batch["target"]["far"],
+                        (h, w),
+                        features=gaussians.semantic_uncertainty,
+                    )
+                )
+                semantic_error = (1.0 - semantic_cosine).detach().clamp(0, 2)
+                error_mean = semantic_error.mean(
+                    dim=(1, 2, 3), keepdim=True
+                ).clamp_min(1e-6)
+                uncertainty_target = (
+                    semantic_error / (4.0 * error_mean)
+                ).clamp(0, 1)
+                uncertainty_valid = semantic_valid & (uncertainty_alpha >= 0.1)
+                uncertainty_prediction = rendered_uncertainty.squeeze(2)
+                semantic_uncertainty_loss = F.smooth_l1_loss(
+                    uncertainty_prediction.masked_select(uncertainty_valid),
+                    uncertainty_target.masked_select(uncertainty_valid),
+                )
+                self.log("loss/semantic_uncertainty", semantic_uncertainty_loss)
+                self.log(
+                    "semantic/uncertainty_mean",
+                    uncertainty_prediction.masked_select(
+                        uncertainty_valid
+                    ).mean(),
+                )
+                total_loss = total_loss + (
+                    self.encoder.cfg.semantic_uncertainty_loss_weight
+                    * semantic_uncertainty_loss
+                )
 
         self.log("loss/total", total_loss)
 
         if hasattr(self.encoder, "semantic_init_diagnostics"):
             for name, value in self.encoder.semantic_init_diagnostics.items():
                 self.log(f"semantic_init/{name}", value)
+        if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
+            for name, value in self.encoder.semantic_uncertainty_diagnostics.items():
+                self.log(f"semantic_uncertainty/{name}", value)
 
         if (
             self.global_rank == 0
@@ -1132,6 +1186,65 @@ class ModelWrapper(LightningModule):
                 self.test_step_outputs.setdefault(
                     "semantic_render_feature_std", []
                 ).append(rendered_feature_std.item())
+                if gaussians.semantic_uncertainty is not None:
+                    rendered_uncertainty, uncertainty_alpha = (
+                        self.decoder.forward_features(
+                            gaussians,
+                            camera_poses,
+                            batch["target"]["intrinsics"],
+                            batch["target"]["near"],
+                            batch["target"]["far"],
+                            (h, w),
+                            features=gaussians.semantic_uncertainty,
+                        )
+                    )
+                    semantic_error = (1.0 - semantic_cosine).detach().clamp(0, 2)
+                    error_mean = semantic_error.mean(
+                        dim=(1, 2, 3), keepdim=True
+                    ).clamp_min(1e-6)
+                    uncertainty_target = (
+                        semantic_error / (4.0 * error_mean)
+                    ).clamp(0, 1)
+                    uncertainty_valid = semantic_valid & (
+                        uncertainty_alpha >= 0.1
+                    )
+                    uncertainty_prediction = rendered_uncertainty.squeeze(2)
+                    valid_prediction = uncertainty_prediction.masked_select(
+                        uncertainty_valid
+                    )
+                    valid_target = uncertainty_target.masked_select(
+                        uncertainty_valid
+                    )
+                    uncertainty_mae = F.l1_loss(
+                        valid_prediction, valid_target
+                    )
+                    centered_prediction = valid_prediction - valid_prediction.mean()
+                    centered_target = valid_target - valid_target.mean()
+                    uncertainty_correlation = (
+                        (centered_prediction * centered_target).mean()
+                        / (
+                            centered_prediction.square().mean().sqrt()
+                            * centered_target.square().mean().sqrt()
+                        ).clamp_min(1e-8)
+                    )
+                    self.test_step_outputs.setdefault(
+                        "semantic_uncertainty_mae", []
+                    ).append(uncertainty_mae.item())
+                    self.test_step_outputs.setdefault(
+                        "semantic_uncertainty_correlation", []
+                    ).append(uncertainty_correlation.item())
+                    self.test_step_outputs.setdefault(
+                        "semantic_uncertainty_mean", []
+                    ).append(valid_prediction.mean().item())
+                    self.test_step_outputs.setdefault(
+                        "semantic_uncertainty_std", []
+                    ).append(valid_prediction.std().item())
+
+        if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
+            for name, value in self.encoder.semantic_uncertainty_diagnostics.items():
+                self.test_step_outputs.setdefault(
+                    f"semantic_uncertainty_gaussian_{name}", []
+                ).append(value.item())
 
         # Render the pre-refinement Gaussians with exactly the same cameras.  This
         # is deliberately outside the benchmarked decoder block: it is a V2

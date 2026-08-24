@@ -112,6 +112,85 @@ def semantic_gradient_feedback_features(
     )
 
 
+def normalize_gaussian_visibility_support(
+    support_gradient: Tensor,
+    relative_scale: float = 4.0,
+    eps: float = 1e-8,
+) -> Tensor:
+    """Normalize per-Gaussian alpha contribution into a bounded support score."""
+    if support_gradient.ndim == 2:
+        support_gradient = support_gradient.unsqueeze(-1)
+    if support_gradient.ndim != 3 or support_gradient.shape[-1] != 1:
+        raise ValueError("support_gradient must have shape [B, G] or [B, G, 1]")
+    if relative_scale <= 0:
+        raise ValueError("relative_scale must be positive")
+    support = support_gradient.float().abs()
+    mean_support = support.mean(dim=1, keepdim=True).clamp_min(eps)
+    return (support / (relative_scale * mean_support)).clamp(0, 1)
+
+
+def semantic_uncertainty_components(
+    semantic_feedback: Tensor,
+    visibility_support: Tensor,
+    need_floor: float = 0.25,
+    reliability_floor: float = 0.05,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Build need, reliability, uncertainty, and correction-priority signals.
+
+    Semantic VJP magnitude says *where* a correction is needed.  Alpha-support
+    VJP says whether that Gaussian was sufficiently visible for the observation
+    to be trusted.  Keeping these concepts separate avoids treating every
+    non-zero semantic gradient as equally reliable.
+    """
+    if semantic_feedback.ndim != 3 or semantic_feedback.shape[-1] < 3:
+        raise ValueError("semantic_feedback must have shape [B, G, D + 2]")
+    expected_shape = semantic_feedback.shape[:2] + (1,)
+    if visibility_support.shape != expected_shape:
+        raise ValueError("visibility_support must have shape [B, G, 1]")
+    if not 0 <= need_floor < 1:
+        raise ValueError("need_floor must satisfy 0 <= value < 1")
+    if not 0 <= reliability_floor < 1:
+        raise ValueError("reliability_floor must satisfy 0 <= value < 1")
+
+    relative_magnitude = semantic_feedback[..., -2:-1].float().clamp(0, 1)
+    active = semantic_feedback[..., -1:].float().clamp(0, 1)
+    need = (
+        (relative_magnitude - need_floor) / (1 - need_floor)
+    ).clamp(0, 1) * active
+    reliability = (
+        (visibility_support.float() - reliability_floor)
+        / (1 - reliability_floor)
+    ).clamp(0, 1) * active
+    priority = need * reliability
+
+    # Uncertainty requires observed semantic mismatch. Poor reliability can
+    # amplify an existing mismatch, but must not label every invisible Gaussian
+    # as uncertain when there is no semantic evidence for it.
+    uncertainty = need * (2.0 - reliability)
+    return need, reliability, uncertainty.clamp(0, 1), priority
+
+
+def apply_semantic_uncertainty_residual(
+    base_uncertainty: Tensor,
+    raw_residual: Tensor,
+    reliability: Tensor,
+    gain: float = 0.25,
+) -> Tensor:
+    """Apply a bounded learned calibration to deterministic uncertainty."""
+    if base_uncertainty.shape != raw_residual.shape:
+        raise ValueError("base_uncertainty and raw_residual must share shape")
+    if reliability.shape != base_uncertainty.shape:
+        raise ValueError("reliability must match base_uncertainty")
+    if base_uncertainty.ndim != 3 or base_uncertainty.shape[-1] != 1:
+        raise ValueError("uncertainty tensors must have shape [B, G, 1]")
+    if gain < 0:
+        raise ValueError("gain must be non-negative")
+    return (
+        base_uncertainty.float()
+        + gain * reliability.float() * torch.tanh(raw_residual.float())
+    ).clamp(0, 1)
+
+
 def apply_semantic_geometry_vjp(
     means: Tensor,
     scales: Tensor,
