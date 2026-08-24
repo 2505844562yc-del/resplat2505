@@ -599,17 +599,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 raise ValueError(
                     "semantic support refinement requires semantic uncertainty"
                 )
-            if self.cfg.semantic_joint_train_new_heads and not all(
-                (
-                    self.cfg.use_semantic_state_refinement,
-                    self.cfg.use_semantic_uncertainty_refinement,
-                    self.cfg.use_semantic_support_refinement,
-                    self.cfg.use_semantic_ray_depth_head,
-                )
+            if (
+                self.cfg.semantic_joint_train_new_heads
+                and not self.cfg.use_semantic_state_refinement
             ):
                 raise ValueError(
-                    "joint semantic training requires state, uncertainty, "
-                    "support, and ray-depth heads"
+                    "joint semantic-head training requires semantic state refinement"
                 )
 
             if self.cfg.use_semantic_state_refinement:
