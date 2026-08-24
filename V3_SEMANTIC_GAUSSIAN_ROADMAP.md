@@ -163,8 +163,8 @@ This is the current validated semantic core.
 
 ### Stage 7 — Joint recurrent semantic-structure refinement and paper ablations
 
-**Status: engineering implementation and 500-step pilot complete; paper-scale
-training and matched ablations pending.**
+**Status: engineering implementation, 500-step pilot, and matched 500-step
+ablation complete; longer multi-scene training pending.**
 
 Activate the coherent recurrent update
 
@@ -193,6 +193,15 @@ improved semantic cosine on 16/20, uncertainty MAE on 19/20, uncertainty
 correlation on 15/20, and LPIPS on 13/20. Mean PSNR changed by only -0.00025 dB.
 The current joint loss weights are therefore retained for the next experiment.
 
+Stage 7C then trained cumulative variants from the same official ReSplat
+checkpoint for 500 steps each. The complete model achieved semantic cosine
+`0.935513845`, PSNR `29.323322201`, SSIM `0.896755630`, and LPIPS `0.114892715`
+on the same 20 fixed samples. Relative to official ReSplat, PSNR changed by only
+`+0.00020` dB, SSIM by `-0.0000017`, and LPIPS by `-0.0000023`. Full-joint PSNR
+improved on 15/20 samples, but SSIM improved on only 4/20. The justified conclusion
+is that the full semantic Gaussian chain is active and non-destructive; this is
+not yet evidence of a stable RGB reconstruction gain.
+
 Required matched ablations:
 
 1. Official ReSplat.
@@ -215,13 +224,12 @@ updates of semantic state, uncertainty, support, and source-ray position.
 
 The correct execution order from the current commit is:
 
-1. Define the matched Stage 1–6 ablation configurations and storage-safe runner.
-2. Run a longer joint schedule with the currently validated loss weights while
-   keeping the ReSplat backbone frozen.
-3. Execute the matched ablation table on the same data split and training budget.
-4. Tune loss weights only if the longer validation evidence reverses the current
-   semantic/uncertainty gains.
-5. Unfreeze the final ReSplat updater block only if the frozen-backbone model
+1. Run a longer full-joint schedule with the currently validated loss weights
+   while keeping the ReSplat backbone frozen.
+2. Evaluate on more fixed samples and scenes, retaining paired per-sample metrics.
+3. Tune support/ray-depth gains only if the longer evidence shows a consistent
+   RGB regression or vanishing structural updates.
+4. Unfreeze the final ReSplat updater block only if the frozen-backbone model
    clearly saturates.
 
 This route preserves all completed useful work and stops short-run noise from
