@@ -771,6 +771,9 @@ class ModelWrapper(LightningModule):
         if hasattr(self.encoder, "semantic_support_diagnostics"):
             for name, value in self.encoder.semantic_support_diagnostics.items():
                 self.log(f"semantic_support/{name}", value)
+        if hasattr(self.encoder, "semantic_ray_depth_diagnostics"):
+            for name, value in self.encoder.semantic_ray_depth_diagnostics.items():
+                self.log(f"semantic_ray_depth/{name}", value)
         if (
             self.encoder.cfg.use_semantic_support_refinement
             and self.encoder.cfg.semantic_support_regularization_weight > 0
@@ -785,6 +788,21 @@ class ModelWrapper(LightningModule):
             total_loss = total_loss + (
                 self.encoder.cfg.semantic_support_regularization_weight
                 * semantic_support_regularization
+            )
+        if (
+            self.encoder.cfg.use_semantic_ray_depth_head
+            and self.encoder.cfg.semantic_ray_depth_regularization_weight > 0
+        ):
+            semantic_ray_depth_regularization = (
+                self.encoder.semantic_ray_depth_regularization
+            )
+            self.log(
+                "loss/semantic_ray_depth_regularization",
+                semantic_ray_depth_regularization,
+            )
+            total_loss = total_loss + (
+                self.encoder.cfg.semantic_ray_depth_regularization_weight
+                * semantic_ray_depth_regularization
             )
 
         self.log("loss/total", total_loss)
@@ -1267,6 +1285,11 @@ class ModelWrapper(LightningModule):
             for name, value in self.encoder.semantic_support_diagnostics.items():
                 self.test_step_outputs.setdefault(
                     f"semantic_support_{name}", []
+                ).append(value.item())
+        if hasattr(self.encoder, "semantic_ray_depth_diagnostics"):
+            for name, value in self.encoder.semantic_ray_depth_diagnostics.items():
+                self.test_step_outputs.setdefault(
+                    f"semantic_ray_depth_{name}", []
                 ).append(value.item())
 
         # Render the pre-refinement Gaussians with exactly the same cameras.  This

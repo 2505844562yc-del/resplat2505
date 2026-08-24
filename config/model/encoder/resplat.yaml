@@ -154,6 +154,7 @@ use_semantic_ray_depth_head: false
 semantic_ray_depth_hidden_channels: 256
 semantic_ray_depth_gain: 0.1
 semantic_ray_depth_confidence_floor: 0.0
+semantic_ray_depth_regularization_weight: 0.01
 
 # AMP
 use_amp: true

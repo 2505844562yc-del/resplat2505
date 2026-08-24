@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Train only the zero-initialized semantic-conditioned ray-depth head.
+# Train only the zero-initialized, priority-gated semantic ray-depth head.
 # Usage: bash scripts/v3_semantic_ray_depth_overfit.sh [steps]
 STEPS="${1:-20}"
 SCENE="032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7"
-OUT="outputs/v3_semantic_ray_depth/${STEPS}steps"
+OUT="outputs/v3_semantic_priority_depth/${STEPS}steps"
+STAGE5_CKPT="$(find outputs/v3_semantic_support/50steps/checkpoints -maxdepth 1 -name '*.ckpt' -print -quit)"
+
+if [[ -z "${STAGE5_CKPT}" ]]; then
+  echo "Stage-5 semantic support checkpoint is missing" >&2
+  exit 1
+fi
 
 CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=dl3dv \
   'loss=[mse,lpips]' \
@@ -39,18 +45,31 @@ CUDA_VISIBLE_DEVICES=0 python -m src.main +experiment=dl3dv \
   model.encoder.semantic_residual_alignment=raster_vjp \
   model.encoder.semantic_residual_alpha_floor=0.1 \
   model.encoder.semantic_vjp_direct_gain=0.3 \
+  model.encoder.use_semantic_uncertainty_refinement=true \
+  model.encoder.semantic_uncertainty_hidden_channels=128 \
+  model.encoder.semantic_uncertainty_residual_gain=0.25 \
+  model.encoder.semantic_uncertainty_need_floor=0.25 \
+  model.encoder.semantic_uncertainty_reliability_floor=0.05 \
+  model.encoder.semantic_uncertainty_support_relative_scale=4.0 \
+  model.encoder.semantic_uncertainty_loss_weight=0.0 \
+  model.encoder.use_semantic_support_refinement=true \
+  model.encoder.semantic_support_hidden_channels=256 \
+  model.encoder.semantic_support_opacity_gain=0.1 \
+  model.encoder.semantic_support_scale_gain=0.05 \
+  model.encoder.semantic_support_regularization_weight=0.0 \
   model.encoder.use_semantic_geometry_vjp=false \
   model.encoder.use_semantic_ray_depth_head=true \
   model.encoder.semantic_ray_depth_hidden_channels=256 \
   model.encoder.semantic_ray_depth_gain=0.1 \
   model.encoder.semantic_ray_depth_confidence_floor=0.0 \
+  model.encoder.semantic_ray_depth_regularization_weight=0.01 \
   model.encoder.semantic_state_residual_gain=0.1 \
   model.encoder.semantic_feature_loss_weight=0.0 \
   train.depth_smooth_loss_weight=0.0 \
   train.print_log_every_n_steps=1 \
   optimizer.lr=1e-4 \
   optimizer.lr_monodepth=0.0 \
-  checkpointing.pretrained_model=pretrained/resplat-base-dl3dv-256x448-view8-1934a04c.pth \
+  checkpointing.pretrained_model="${STAGE5_CKPT}" \
   checkpointing.no_strict_load=true \
   checkpointing.every_n_train_steps="${STEPS}" \
   checkpointing.save_top_k=1

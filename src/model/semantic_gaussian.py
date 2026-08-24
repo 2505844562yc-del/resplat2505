@@ -349,3 +349,41 @@ def apply_learned_ray_depth_residual(
         * confidence_gate
     )
     return means.float() + depth_delta * rays, depth_delta
+
+
+def apply_priority_gated_ray_depth_residual(
+    means: Tensor,
+    scales: Tensor,
+    ray_directions: Tensor,
+    raw_depth_residual: Tensor,
+    priority: Tensor,
+    gain: float = 0.1,
+) -> tuple[Tensor, Tensor]:
+    """Move Gaussians along source rays only where semantic evidence is trusted.
+
+    ``priority`` is the Stage-4 product of semantic correction need and
+    visibility reliability.  The displacement is expressed relative to each
+    Gaussian's local scale, bounded by ``tanh``, and exactly zero when either
+    the head output or priority is zero.
+    """
+    if means.ndim != 3 or means.shape[-1] != 3 or scales.shape != means.shape:
+        raise ValueError("means and scales must share shape [B, G, 3]")
+    if ray_directions.shape != means.shape:
+        raise ValueError("ray_directions must match means")
+    expected_scalar_shape = means.shape[:-1] + (1,)
+    if raw_depth_residual.shape != expected_scalar_shape:
+        raise ValueError("raw_depth_residual must have shape [B, G, 1]")
+    if priority.shape != expected_scalar_shape:
+        raise ValueError("priority must have shape [B, G, 1]")
+    if gain < 0:
+        raise ValueError("gain must be non-negative")
+
+    rays = F.normalize(ray_directions.float(), dim=-1, eps=1e-8)
+    local_scale = scales.float().mean(dim=-1, keepdim=True)
+    depth_delta = (
+        gain
+        * local_scale
+        * torch.tanh(raw_depth_residual.float())
+        * priority.float().clamp(0, 1)
+    )
+    return means.float() + depth_delta * rays, depth_delta

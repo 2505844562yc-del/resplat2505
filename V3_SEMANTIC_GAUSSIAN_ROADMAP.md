@@ -56,7 +56,7 @@ effects are kept until the integrated model is trained for enough steps.
 | Frozen DINOv2 768-to-16 projection and per-Gaussian `z` initialization | Keep | Real semantic state, no target leakage, no feature collapse |
 | Raster-VJP pixel-to-Gaussian feedback | Keep | Correct visibility/contribution alignment |
 | Direct bounded `z` correction at gain 0.3 | Keep | 20/20 semantic samples improved; RGB is exactly unchanged |
-| Learned source-ray depth head | Keep as Stage-6 prototype | Zero initialized; 50-step PSNR improved on 5/5 and LPIPS on 4/5; effect is small but safe |
+| Priority-gated source-ray depth head | Keep | Zero initialized; bounded by local scale and activated only by Stage-4 `need × reliable`; 50-step mean PSNR and LPIPS improve without material baseline damage |
 
 ### Retained for ablation, not active in the final main path
 
@@ -129,9 +129,8 @@ This is the current validated semantic core.
   diagnostics.
 - First version uses deterministic detached statistics plus a zero-initialized
   learned correction. It must not change RGB parameters yet.
-- Check that the gate is selective; the current Stage-5 prototype activates about
-  99.9% of Gaussians at floor zero, so this stage must avoid a meaningless all-on
-  gate.
+- Check that the gate is selective. The promoted gate activates about 21.9% of
+  Gaussians on the five-sample screen rather than the earlier nearly all-on gate.
 
 ### Stage 5 — Semantic-conditioned support update: opacity and scale
 
@@ -150,12 +149,13 @@ This is the current validated semantic core.
 
 ### Stage 6 — Semantic-conditioned 3-D position refinement
 
-**Status: prototype implemented early; retain and revise after Stages 4–5.**
+**Status: complete and promoted.**
 
 - Reuse the existing zero-initialized ray-depth head.
 - Restrict displacement to each Gaussian's original source-camera ray.
 - Bound displacement by local Gaussian scale and semantic uncertainty gates.
-- Replace the current almost-all-active magnitude gate with Stage-4 `need × reliable`.
+- The earlier almost-all-active magnitude gate has been replaced by Stage-4
+  `need × reliable` priority.
 - Train under photometric/perceptual reconstruction loss; semantics chooses the
   region, not the sign of the 3-D displacement.
 - Keep direct full-3D semantic VJP and direct scale VJP disabled as negative
@@ -195,16 +195,16 @@ selectivity, parameter-update magnitudes, memory, and inference time.
 
 ## 5. Current position and immediate execution order
 
-The mainline is **complete through Stage 3**, not failed at Stage 5. The earlier
-Stage-4 direct geometry screen and Stage-5 learned ray-depth experiment were
-useful out-of-order probes of the later geometry stages.
+The modular mainline is **complete through Stage 6**. Stages 1–6 now form one
+causal chain from semantic-carrying Gaussians to conservative semantic-conditioned
+updates of semantic state, uncertainty, support, and source-ray position.
 
 The correct execution order from the current commit is:
 
-1. Reconnect the existing ray-depth head as Stage 6 using the new gate.
-2. Build one dedicated V3 main experiment configuration that activates the
+1. Build one dedicated V3 main experiment configuration that activates the
    retained components while base ReSplat defaults remain off.
-3. Run a short multi-scene engineering validation of the full chain.
+2. Run a short multi-scene engineering validation of the full chain.
+3. Jointly train the new semantic heads without unfreezing the ReSplat backbone.
 4. Only then start longer matched training and final ablations.
 
 This route preserves all completed useful work and stops short-run noise from

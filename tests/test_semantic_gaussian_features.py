@@ -5,6 +5,7 @@ import torch
 from src.model.semantic_gaussian import (
     SemanticFeatureProjector,
     apply_learned_ray_depth_residual,
+    apply_priority_gated_ray_depth_residual,
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
     apply_semantic_support_residual,
@@ -260,6 +261,49 @@ class LearnedRayDepthResidualTest(unittest.TestCase):
             confidence_floor=0.25,
         )
         self.assertTrue(torch.equal(updated, means))
+
+
+class PriorityGatedRayDepthResidualTest(unittest.TestCase):
+    def test_zero_raw_residual_is_exact_identity(self):
+        means = torch.randn(1, 5, 3)
+        updated, delta = apply_priority_gated_ray_depth_residual(
+            means,
+            torch.rand_like(means) + 0.1,
+            torch.randn_like(means),
+            torch.zeros(1, 5, 1),
+            torch.ones(1, 5, 1),
+            gain=0.2,
+        )
+        self.assertTrue(torch.equal(updated, means))
+        self.assertTrue(torch.equal(delta, torch.zeros_like(delta)))
+
+    def test_displacement_is_bounded_parallel_and_priority_gated(self):
+        means = torch.zeros(1, 2, 3)
+        scales = torch.full_like(means, 2.0)
+        updated, delta = apply_priority_gated_ray_depth_residual(
+            means,
+            scales,
+            torch.tensor([[[0.0, 0.0, 10.0], [10.0, 0.0, 0.0]]]),
+            torch.full((1, 2, 1), 1000.0),
+            torch.tensor([[[0.5], [0.0]]]),
+            gain=0.1,
+        )
+        self.assertTrue(torch.allclose(delta[0, 0], torch.tensor([0.1])))
+        self.assertTrue(torch.equal(delta[0, 1], torch.zeros(1)))
+        self.assertTrue(
+            torch.allclose(updated[0, 0], torch.tensor([0.0, 0.0, 0.1]))
+        )
+        self.assertTrue(torch.equal(updated[0, 1], means[0, 1]))
+
+    def test_invalid_priority_shape_is_rejected(self):
+        with self.assertRaises(ValueError):
+            apply_priority_gated_ray_depth_residual(
+                torch.zeros(1, 3, 3),
+                torch.ones(1, 3, 3),
+                torch.ones(1, 3, 3),
+                torch.zeros(1, 3, 1),
+                torch.ones(1, 3),
+            )
 
 
 class SemanticUncertaintyTest(unittest.TestCase):
