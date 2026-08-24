@@ -135,7 +135,7 @@ This is the current validated semantic core.
 
 ### Stage 5 — Semantic-conditioned support update: opacity and scale
 
-**Status: pending.**
+**Status: complete and promoted.**
 
 - Add one small zero-initialized support head with separate outputs:
   - bounded opacity-logit residual `delta_alpha` for visibility/occlusion;
@@ -201,12 +201,11 @@ useful out-of-order probes of the later geometry stages.
 
 The correct execution order from the current commit is:
 
-1. Implement Stage 5 opacity/scale support head with zero identity.
-2. Reconnect the existing ray-depth head as Stage 6 using the new gate.
-3. Build one dedicated V3 main experiment configuration that activates the
+1. Reconnect the existing ray-depth head as Stage 6 using the new gate.
+2. Build one dedicated V3 main experiment configuration that activates the
    retained components while base ReSplat defaults remain off.
-4. Run a short multi-scene engineering validation of the full chain.
-5. Only then start longer matched training and final ablations.
+3. Run a short multi-scene engineering validation of the full chain.
+4. Only then start longer matched training and final ablations.
 
 This route preserves all completed useful work and stops short-run noise from
 continually changing the architecture.

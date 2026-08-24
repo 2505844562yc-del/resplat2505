@@ -7,6 +7,7 @@ from src.model.semantic_gaussian import (
     apply_learned_ray_depth_residual,
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
+    apply_semantic_support_residual,
     apply_semantic_uncertainty_residual,
     confidence_gate_semantic_gradient_feedback,
     normalize_gaussian_visibility_support,
@@ -309,3 +310,57 @@ class SemanticUncertaintyTest(unittest.TestCase):
         self.assertTrue(torch.all((0 <= output) & (output <= 1)))
         self.assertTrue(torch.allclose(output[0, 0], torch.tensor([0.75])))
         self.assertTrue(torch.equal(output[0, 1], base[0, 1]))
+
+
+class SemanticSupportResidualTest(unittest.TestCase):
+    def test_zero_raw_residual_is_exact_identity(self):
+        scales = torch.rand(1, 5, 3) + 0.1
+        logits = torch.randn(1, 5, 1)
+        updated_scales, updated_logits, scale_delta, opacity_delta = (
+            apply_semantic_support_residual(
+                scales,
+                logits,
+                torch.zeros(1, 5, 4),
+                torch.ones(1, 5, 1),
+            )
+        )
+        self.assertTrue(torch.equal(updated_scales, scales))
+        self.assertTrue(torch.equal(updated_logits, logits))
+        self.assertTrue(torch.equal(scale_delta, torch.zeros_like(scale_delta)))
+        self.assertTrue(torch.equal(opacity_delta, torch.zeros_like(opacity_delta)))
+
+    def test_updates_are_bounded_and_priority_gated(self):
+        scales = torch.ones(1, 2, 3)
+        logits = torch.zeros(1, 2, 1)
+        raw = torch.tensor(
+            [[[1000.0, 1000.0, 1000.0, 1000.0],
+              [-1000.0, -1000.0, -1000.0, -1000.0]]]
+        )
+        updated_scales, updated_logits, scale_delta, opacity_delta = (
+            apply_semantic_support_residual(
+                scales,
+                logits,
+                raw,
+                torch.tensor([[[1.0], [0.0]]]),
+                opacity_gain=0.1,
+                scale_gain=0.05,
+            )
+        )
+        self.assertTrue(torch.allclose(opacity_delta[0, 0], torch.tensor([0.1])))
+        self.assertTrue(torch.equal(opacity_delta[0, 1], torch.zeros(1)))
+        self.assertTrue(torch.allclose(scale_delta[0, 0], torch.full((3,), 0.05)))
+        self.assertTrue(torch.equal(scale_delta[0, 1], torch.zeros(3)))
+        self.assertTrue(
+            torch.allclose(updated_scales[0, 0], torch.full((3,), torch.exp(torch.tensor(0.05))))
+        )
+        self.assertTrue(torch.equal(updated_scales[0, 1], scales[0, 1]))
+        self.assertTrue(torch.allclose(updated_logits[0, 0], torch.tensor([0.1])))
+
+    def test_invalid_priority_shape_is_rejected(self):
+        with self.assertRaises(ValueError):
+            apply_semantic_support_residual(
+                torch.ones(1, 3, 3),
+                torch.zeros(1, 3, 1),
+                torch.zeros(1, 3, 4),
+                torch.ones(1, 3),
+            )

@@ -191,6 +191,50 @@ def apply_semantic_uncertainty_residual(
     ).clamp(0, 1)
 
 
+def apply_semantic_support_residual(
+    scales: Tensor,
+    opacity_logits: Tensor,
+    raw_residual: Tensor,
+    priority: Tensor,
+    opacity_gain: float = 0.1,
+    scale_gain: float = 0.05,
+    min_scale: float = 1e-6,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Apply bounded semantic-conditioned opacity and log-scale corrections.
+
+    The semantic priority selects where an update is allowed.  The learned head,
+    supervised through RGB/perceptual rendering losses, chooses its sign.
+    Returns updated scales/logits and the applied log-scale/opacity residuals.
+    """
+    if scales.ndim != 3 or scales.shape[-1] != 3:
+        raise ValueError("scales must have shape [B, G, 3]")
+    expected_scalar_shape = scales.shape[:2] + (1,)
+    if opacity_logits.shape != expected_scalar_shape:
+        raise ValueError("opacity_logits must have shape [B, G, 1]")
+    if raw_residual.shape != scales.shape[:2] + (4,):
+        raise ValueError("raw_residual must have shape [B, G, 4]")
+    if priority.shape != expected_scalar_shape:
+        raise ValueError("priority must have shape [B, G, 1]")
+    if opacity_gain < 0 or scale_gain < 0:
+        raise ValueError("semantic support gains must be non-negative")
+    if min_scale <= 0:
+        raise ValueError("min_scale must be positive")
+
+    gate = priority.float().clamp(0, 1)
+    opacity_delta = opacity_gain * torch.tanh(raw_residual[..., :1].float()) * gate
+    log_scale_delta = (
+        scale_gain * torch.tanh(raw_residual[..., 1:].float()) * gate
+    )
+    updated_logits = opacity_logits.float() + opacity_delta
+    updated_scales = scales.float() * torch.exp(log_scale_delta)
+    return (
+        updated_scales.clamp_min(min_scale),
+        updated_logits,
+        log_scale_delta,
+        opacity_delta,
+    )
+
+
 def apply_semantic_geometry_vjp(
     means: Tensor,
     scales: Tensor,

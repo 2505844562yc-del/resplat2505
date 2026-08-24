@@ -52,6 +52,7 @@ from ..semantic_gaussian import (
     apply_learned_ray_depth_residual,
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
+    apply_semantic_support_residual,
     apply_semantic_uncertainty_residual,
     confidence_gate_semantic_gradient_feedback,
     normalize_gaussian_visibility_support,
@@ -198,6 +199,11 @@ class EncoderReSplatCfg:
     semantic_uncertainty_reliability_floor: float
     semantic_uncertainty_support_relative_scale: float
     semantic_uncertainty_loss_weight: float
+    use_semantic_support_refinement: bool
+    semantic_support_hidden_channels: int
+    semantic_support_opacity_gain: float
+    semantic_support_scale_gain: float
+    semantic_support_regularization_weight: float
     use_semantic_geometry_vjp: bool
     semantic_geometry_mean_gain: float
     semantic_geometry_scale_gain: float
@@ -584,6 +590,13 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 raise ValueError(
                     "semantic uncertainty refinement requires semantic state refinement"
                 )
+            if (
+                self.cfg.use_semantic_support_refinement
+                and not self.cfg.use_semantic_uncertainty_refinement
+            ):
+                raise ValueError(
+                    "semantic support refinement requires semantic uncertainty"
+                )
 
             if self.cfg.use_semantic_state_refinement:
                 if not self.cfg.use_semantic_gaussian_features:
@@ -697,6 +710,38 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     )
                     nn.init.zeros_(self.semantic_uncertainty_head[-1].weight)
                     nn.init.zeros_(self.semantic_uncertainty_head[-1].bias)
+
+                    if self.cfg.use_semantic_support_refinement:
+                        if self.cfg.semantic_support_hidden_channels < 1:
+                            raise ValueError(
+                                "semantic_support_hidden_channels must be positive"
+                            )
+                        if (
+                            self.cfg.semantic_support_opacity_gain < 0
+                            or self.cfg.semantic_support_scale_gain < 0
+                        ):
+                            raise ValueError(
+                                "semantic support gains must be non-negative"
+                            )
+                        if self.cfg.semantic_support_regularization_weight < 0:
+                            raise ValueError(
+                                "semantic support regularization must be non-negative"
+                            )
+                        # Raster feedback contributes D+2 channels. Need,
+                        # reliability, calibrated uncertainty, and priority add 4.
+                        support_channels = (
+                            channels + self.cfg.semantic_feature_dim + 6
+                        )
+                        self.semantic_support_head = nn.Sequential(
+                            nn.Linear(
+                                support_channels,
+                                self.cfg.semantic_support_hidden_channels,
+                            ),
+                            nn.GELU(),
+                            nn.Linear(self.cfg.semantic_support_hidden_channels, 4),
+                        )
+                        nn.init.zeros_(self.semantic_support_head[-1].weight)
+                        nn.init.zeros_(self.semantic_support_head[-1].bias)
 
                 if self.cfg.use_semantic_ray_depth_head:
                     if (
@@ -2311,6 +2356,40 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                             dim=-1,
                         )
                     )
+                semantic_support_raw = None
+                if self.cfg.use_semantic_support_refinement:
+                    calibrated_uncertainty = apply_semantic_uncertainty_residual(
+                        semantic_uncertainty_base,
+                        rearrange(
+                            semantic_uncertainty_raw,
+                            "(b n) c -> b n c",
+                            b=b,
+                        ),
+                        semantic_uncertainty_reliability,
+                        gain=self.cfg.semantic_uncertainty_residual_gain,
+                    )
+                    flat_support_signals = rearrange(
+                        torch.cat(
+                            (
+                                semantic_uncertainty_need,
+                                semantic_uncertainty_reliability,
+                                calibrated_uncertainty,
+                                semantic_uncertainty_priority,
+                            ),
+                            dim=-1,
+                        ),
+                        "b n c -> (b n) c",
+                    )
+                    semantic_support_raw = self.semantic_support_head(
+                        torch.cat(
+                            (
+                                tmp_state,
+                                semantic_residual_feedback,
+                                flat_support_signals,
+                            ),
+                            dim=-1,
+                        )
+                    )
                 semantic_ray_depth_raw = None
                 if self.cfg.use_semantic_ray_depth_head:
                     if semantic_residual_feedback is None:
@@ -2342,6 +2421,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             if semantic_uncertainty_raw is not None:
                 semantic_uncertainty_raw = rearrange(
                     semantic_uncertainty_raw, "(b n) c -> b n c", b=b
+                )
+            if semantic_support_raw is not None:
+                semantic_support_raw = rearrange(
+                    semantic_support_raw, "(b n) c -> b n c", b=b
                 )
             if semantic_ray_depth_raw is not None:
                 semantic_ray_depth_raw = rearrange(
@@ -2400,6 +2483,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         semantic_uncertainty_priority.repeat_interleave(
                             repeat, dim=1
                         )
+                    )
+                if semantic_support_raw is not None:
+                    semantic_support_raw = semantic_support_raw.repeat_interleave(
+                        repeat, dim=1
                     )
                 if semantic_ray_depth_raw is not None:
                     semantic_ray_depth_raw = (
@@ -2494,6 +2581,56 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         f"active={(semantic_uncertainty_priority > 0).float().mean().item():.4f}"
                     )
                     self._logged_semantic_uncertainty_stats = True
+
+            if semantic_support_raw is not None:
+                (
+                    prev_scales,
+                    prev_opacities_raw,
+                    semantic_log_scale_delta,
+                    semantic_opacity_delta,
+                ) = apply_semantic_support_residual(
+                    prev_scales,
+                    prev_opacities_raw,
+                    semantic_support_raw,
+                    semantic_uncertainty_priority,
+                    opacity_gain=self.cfg.semantic_support_opacity_gain,
+                    scale_gain=self.cfg.semantic_support_scale_gain,
+                    min_scale=self.cfg.gaussian_adapter.clamp_min_scale,
+                )
+                self.semantic_support_regularization = (
+                    semantic_log_scale_delta.square().mean()
+                    + semantic_opacity_delta.square().mean()
+                )
+                self.semantic_support_diagnostics = {
+                    "opacity_delta_abs_mean": (
+                        semantic_opacity_delta.abs().mean().detach()
+                    ),
+                    "opacity_delta_abs_max": (
+                        semantic_opacity_delta.abs().max().detach()
+                    ),
+                    "log_scale_delta_abs_mean": (
+                        semantic_log_scale_delta.abs().mean().detach()
+                    ),
+                    "log_scale_delta_abs_max": (
+                        semantic_log_scale_delta.abs().max().detach()
+                    ),
+                    "active": (
+                        (semantic_uncertainty_priority > 0)
+                        .float()
+                        .mean()
+                        .detach()
+                    ),
+                }
+                if not hasattr(self, "_logged_semantic_support_stats"):
+                    print(
+                        "semantic support: "
+                        f"opacity_mean={semantic_opacity_delta.abs().mean().item():.7f}, "
+                        f"opacity_max={semantic_opacity_delta.abs().max().item():.7f}, "
+                        f"log_scale_mean={semantic_log_scale_delta.abs().mean().item():.7f}, "
+                        f"log_scale_max={semantic_log_scale_delta.abs().max().item():.7f}, "
+                        f"active={(semantic_uncertainty_priority > 0).float().mean().item():.4f}"
+                    )
+                    self._logged_semantic_support_stats = True
 
             if semantic_ray_depth_raw is not None:
                 if prev_means.shape[1] % v != 0:
