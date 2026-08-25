@@ -281,3 +281,24 @@ The full first-paper architecture is now coherent through semantic state,
 rendered residual, uncertainty, semantic-conditioned recurrent refinement, and
 fixed-budget Gaussian allocation. The next recommended work is longer joint
 training and broader paired evaluation rather than another mandatory module.
+
+### Stage 9M — Medium single-scene joint validation
+
+**Status: complete; non-destructive result confirmed on disjoint held-out views.**
+
+A 500-step Stage 7–9 joint adaptation was run from the Stage-7C checkpoint on
+one 324-frame DL3DV scene. Training was restricted to frames 0–119, while the
+evaluation used eight context and eight target frames exclusively from 120–159.
+This is a scene-specific adaptation experiment with strict view holdout, not a
+train/test-identical overfit and not yet a multi-scene generalization result.
+
+The best compromise occurred at step 200: relative to Stage 7C, PSNR changed by
+`-0.00348 dB`, SSIM by `+0.0000015`, LPIPS by `+0.000302`, semantic cosine by
+`+0.000117`, and uncertainty MAE by `-0.000738`. Semantic cosine and uncertainty
+calibration continued to improve through step 500, while RGB metrics drifted
+slightly. Enabling versus disabling the trained fixed-candidate split changed
+PSNR by less than `0.00005 dB`, so the split is not the source of the RGB drift.
+
+This validates stable medium-length learning and preserves Stage 9. The next
+recommended experiment is the same paired protocol on three scenes, using 200
+steps as the conservative checkpoint and 500 steps as the semantic endpoint.
