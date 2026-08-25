@@ -6,6 +6,7 @@ from torch import Tensor, nn
 
 
 SEMANTIC_JOINT_HEAD_NAMES = (
+    "encoder.depth_predictor.semantic_depth_adapters",
     "encoder.semantic_state_head",
     "encoder.semantic_uncertainty_head",
     "encoder.semantic_support_head",
@@ -18,6 +19,11 @@ SEMANTIC_JOINT_HEAD_NAMES = (
 def semantic_joint_parameter_trainable(name: str) -> bool:
     """Return whether a model parameter belongs to a promoted semantic head."""
     return any(token in name for token in SEMANTIC_JOINT_HEAD_NAMES)
+
+
+def semantic_depth_parameter_trainable(name: str) -> bool:
+    """Return whether a parameter belongs to Situation A's depth adapter."""
+    return "encoder.depth_predictor.semantic_depth_adapters" in name
 
 
 def semantic_updater_adapter_parameter_trainable(name: str) -> bool:

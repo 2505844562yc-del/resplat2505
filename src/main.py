@@ -37,6 +37,7 @@ with install_import_hook(
     from src.model.encoder import get_encoder
     from src.model.model_wrapper import ModelWrapper
     from src.model.semantic_gaussian import (
+        semantic_depth_parameter_trainable,
         semantic_joint_parameter_trainable,
         semantic_split_parameter_trainable,
         semantic_updater_adapter_parameter_trainable,
@@ -297,6 +298,8 @@ def train(cfg_dict: DictConfig):
             for name, params in model_wrapper.named_parameters():
                 if cfg.model.encoder.semantic_split_train_only:
                     trainable = semantic_split_parameter_trainable(name)
+                elif cfg.model.encoder.semantic_depth_train_only:
+                    trainable = semantic_depth_parameter_trainable(name)
                 elif cfg.model.encoder.semantic_updater_adapter_train_only:
                     trainable = semantic_updater_adapter_parameter_trainable(name)
                 elif cfg.model.encoder.semantic_joint_train_new_heads:

@@ -16,6 +16,7 @@ from src.model.semantic_gaussian import (
     normalize_gaussian_visibility_support,
     project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
+    semantic_depth_parameter_trainable,
     semantic_joint_parameter_trainable,
     semantic_split_parameter_trainable,
     semantic_updater_adapter_parameter_trainable,
@@ -29,6 +30,7 @@ from src.model.semantic_gaussian import (
 class SemanticJointParameterSelectionTest(unittest.TestCase):
     def test_all_promoted_heads_are_selected(self):
         for name in (
+            "encoder.depth_predictor.semantic_depth_adapters.0.residual_head.weight",
             "encoder.semantic_state_head.0.weight",
             "encoder.semantic_uncertainty_head.2.bias",
             "encoder.semantic_support_head.0.weight",
@@ -37,6 +39,18 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
             "encoder.semantic_split_head.2.weight",
         ):
             self.assertTrue(semantic_joint_parameter_trainable(name))
+
+    def test_semantic_depth_selection_is_narrow(self):
+        self.assertTrue(
+            semantic_depth_parameter_trainable(
+                "encoder.depth_predictor.semantic_depth_adapters.0.gate_head.weight"
+            )
+        )
+        self.assertFalse(
+            semantic_depth_parameter_trainable(
+                "encoder.depth_predictor.depth_head.0.2.weight"
+            )
+        )
 
     def test_backbone_and_projector_remain_frozen(self):
         for name in (

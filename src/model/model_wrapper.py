@@ -224,7 +224,11 @@ class ModelWrapper(LightningModule):
                         batch["context"]["boundary_confidence"][:, start:end]
                     )
 
-                if self.encoder.cfg.num_refine > 0:
+                if (
+                    self.encoder.cfg.num_refine > 0
+                    and not self.encoder.cfg.use_semantic_gaussian_init
+                    and not self.encoder.cfg.use_semantic_depth_logit_adapter
+                ):
                     with torch.no_grad():
                         curr_gaussians = self.encoder(
                             curr_window_input,
@@ -292,6 +296,7 @@ class ModelWrapper(LightningModule):
             if (
                 self.encoder.cfg.num_refine > 0
                 and not self.encoder.cfg.use_semantic_gaussian_init
+                and not self.encoder.cfg.use_semantic_depth_logit_adapter
             ):
                 with torch.no_grad():
                     gaussians = self.encoder(
@@ -310,11 +315,20 @@ class ModelWrapper(LightningModule):
 
         supervise_intermediate_depth = False
         semantic_init_output = None
+        semantic_depth_init_features = None
+        semantic_depth_init_alpha = None
+        semantic_depth_init_teacher = None
 
         if self.encoder.cfg.num_refine > 0:
             if (
-                self.encoder.cfg.use_semantic_gaussian_init
-                and self.encoder.cfg.semantic_init_auxiliary_loss_weight > 0
+                (
+                    self.encoder.cfg.use_semantic_gaussian_init
+                    and self.encoder.cfg.semantic_init_auxiliary_loss_weight > 0
+                )
+                or (
+                    self.encoder.cfg.use_semantic_depth_logit_adapter
+                    and self.encoder.cfg.semantic_depth_init_rgb_loss_weight > 0
+                )
             ):
                 semantic_init_output = self.decoder.forward(
                     gaussians,
@@ -324,6 +338,21 @@ class ModelWrapper(LightningModule):
                     batch["target"]["far"],
                     (h, w),
                     depth_mode=None,
+                )
+            if (
+                self.encoder.cfg.use_semantic_depth_logit_adapter
+                and self.encoder.cfg.semantic_depth_init_feature_loss_weight > 0
+            ):
+                (
+                    semantic_depth_init_features,
+                    semantic_depth_init_alpha,
+                ) = self.decoder.forward_features(
+                    gaussians,
+                    batch["target"]["extrinsics"],
+                    batch["target"]["intrinsics"],
+                    batch["target"]["near"],
+                    batch["target"]["far"],
+                    (h, w),
                 )
             refine_output = self.encoder.forward_update(
                 batch["context"],
@@ -455,14 +484,21 @@ class ModelWrapper(LightningModule):
             # for the new initial geometry. The target view is used only here as
             # supervision; it is never fed to the initializer.
             if semantic_init_output is not None:
-                init_weight = self.encoder.cfg.semantic_init_auxiliary_loss_weight
+                if self.encoder.cfg.use_semantic_depth_logit_adapter:
+                    init_weight = (
+                        self.encoder.cfg.semantic_depth_init_rgb_loss_weight
+                    )
+                    init_log_prefix = "semantic_depth_init"
+                else:
+                    init_weight = self.encoder.cfg.semantic_init_auxiliary_loss_weight
+                    init_log_prefix = "semantic_init"
                 init_psnr = compute_psnr(
                     rearrange(target_gt, "b v c h w -> (b v) c h w"),
                     rearrange(
                         semantic_init_output.color, "b v c h w -> (b v) c h w"
                     ),
                 )
-                self.log("train/semantic_init_psnr", init_psnr.mean())
+                self.log(f"train/{init_log_prefix}_psnr", init_psnr.mean())
                 for loss_fn in self.losses:
                     if loss_fn.name == "mse":
                         init_loss = loss_fn.forward(
@@ -482,8 +518,45 @@ class ModelWrapper(LightningModule):
                             valid_depth_mask=valid_depth_mask,
                             half_res_lpips=self.train_cfg.half_res_lpips_loss,
                         )
-                    self.log(f"loss/semantic_init_{loss_fn.name}", init_loss)
+                    self.log(f"loss/{init_log_prefix}_{loss_fn.name}", init_loss)
                     total_loss = total_loss + init_weight * init_loss
+
+            if semantic_depth_init_features is not None:
+                with torch.no_grad():
+                    semantic_depth_init_teacher = (
+                        self.encoder.extract_semantic_teacher_features(
+                            batch["target"]["image"], (h, w)
+                        )
+                    )
+                init_semantic_cosine = F.cosine_similarity(
+                    semantic_depth_init_features,
+                    semantic_depth_init_teacher,
+                    dim=2,
+                )
+                init_semantic_valid = semantic_depth_init_alpha >= 0.1
+                valid_init_cosine = init_semantic_cosine.masked_select(
+                    init_semantic_valid
+                )
+                if valid_init_cosine.numel() == 0:
+                    semantic_depth_init_feature_loss = (
+                        1.0 - init_semantic_cosine.mean()
+                    )
+                else:
+                    semantic_depth_init_feature_loss = (
+                        1.0 - valid_init_cosine.mean()
+                    )
+                self.log(
+                    "loss/semantic_depth_init_feature",
+                    semantic_depth_init_feature_loss,
+                )
+                self.log(
+                    "semantic_depth_init/target_cosine",
+                    1.0 - semantic_depth_init_feature_loss,
+                )
+                total_loss = total_loss + (
+                    self.encoder.cfg.semantic_depth_init_feature_loss_weight
+                    * semantic_depth_init_feature_loss
+                )
 
             # loss on input views
             if self.train_cfg.loss_on_input_views:
@@ -695,10 +768,15 @@ class ModelWrapper(LightningModule):
                 batch["target"]["far"],
                 (h, w),
             )
-            with torch.no_grad():
-                semantic_teacher = self.encoder.extract_semantic_teacher_features(
-                    batch["target"]["image"], (h, w)
-                )
+            if semantic_depth_init_teacher is None:
+                with torch.no_grad():
+                    semantic_teacher = (
+                        self.encoder.extract_semantic_teacher_features(
+                            batch["target"]["image"], (h, w)
+                        )
+                    )
+            else:
+                semantic_teacher = semantic_depth_init_teacher
             semantic_cosine = F.cosine_similarity(
                 semantic_render, semantic_teacher, dim=2
             )
@@ -765,6 +843,9 @@ class ModelWrapper(LightningModule):
         if hasattr(self.encoder, "semantic_init_diagnostics"):
             for name, value in self.encoder.semantic_init_diagnostics.items():
                 self.log(f"semantic_init/{name}", value)
+        if hasattr(self.encoder, "semantic_depth_init_diagnostics"):
+            for name, value in self.encoder.semantic_depth_init_diagnostics.items():
+                self.log(f"semantic_depth_init/{name}", value)
         if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
             for name, value in self.encoder.semantic_uncertainty_diagnostics.items():
                 self.log(f"semantic_uncertainty/{name}", value)
@@ -782,6 +863,27 @@ class ModelWrapper(LightningModule):
         if hasattr(self.encoder, "semantic_split_diagnostics"):
             for name, value in self.encoder.semantic_split_diagnostics.items():
                 self.log(f"semantic_split/{name}", value)
+        if (
+            self.encoder.cfg.use_semantic_depth_logit_adapter
+            and self.encoder.cfg.semantic_depth_kl_weight > 0
+        ):
+            semantic_depth_kl = self.encoder.semantic_depth_kl_regularization
+            self.log("loss/semantic_depth_kl", semantic_depth_kl)
+            total_loss = total_loss + (
+                self.encoder.cfg.semantic_depth_kl_weight * semantic_depth_kl
+            )
+        if (
+            self.encoder.cfg.use_semantic_depth_logit_adapter
+            and self.encoder.cfg.semantic_depth_delta_weight > 0
+        ):
+            semantic_depth_delta = (
+                self.encoder.semantic_depth_delta_regularization
+            )
+            self.log("loss/semantic_depth_delta", semantic_depth_delta)
+            total_loss = total_loss + (
+                self.encoder.cfg.semantic_depth_delta_weight
+                * semantic_depth_delta
+            )
         if (
             self.encoder.cfg.use_semantic_support_refinement
             and self.encoder.cfg.semantic_support_regularization_weight > 0
