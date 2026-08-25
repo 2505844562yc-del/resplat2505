@@ -1416,6 +1416,11 @@ class ModelWrapper(LightningModule):
                         "semantic_uncertainty_std", []
                     ).append(valid_prediction.std().item())
 
+        if hasattr(self.encoder, "semantic_depth_init_diagnostics"):
+            for name, value in self.encoder.semantic_depth_init_diagnostics.items():
+                self.test_step_outputs.setdefault(
+                    f"semantic_depth_init_{name}", []
+                ).append(value.item())
         if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
             for name, value in self.encoder.semantic_uncertainty_diagnostics.items():
                 self.test_step_outputs.setdefault(
