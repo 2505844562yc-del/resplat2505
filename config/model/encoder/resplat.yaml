@@ -155,6 +155,12 @@ semantic_ray_depth_hidden_channels: 256
 semantic_ray_depth_gain: 0.1
 semantic_ray_depth_confidence_floor: 0.0
 semantic_ray_depth_regularization_weight: 0.01
+use_semantic_updater_adapter: false
+semantic_updater_adapter_hidden_channels: 256
+semantic_updater_adapter_gain: 0.1
+semantic_updater_adapter_regularization_weight: 0.01
+semantic_updater_adapter_train_only: false
+semantic_updater_unfreeze_last_block: false
 semantic_joint_train_new_heads: false
 
 # AMP

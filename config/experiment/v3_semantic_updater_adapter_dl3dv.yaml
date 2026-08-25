@@ -1,0 +1,94 @@
+# @package _global_
+
+defaults:
+  - override /dataset: dl3dv
+  - override /model/encoder: resplat
+  - override /loss: [mse, lpips]
+  - override /dataset/view_sampler: boundedv2_360
+
+wandb:
+  name: v3_semantic_updater_adapter_dl3dv
+  tags: [dl3dv, semantic-gaussians, updater-adapter]
+
+data_loader:
+  train:
+    batch_size: 1
+
+trainer:
+  max_steps: 300_001
+  num_nodes: 1
+
+model:
+  encoder:
+    num_depth_candidates: 128
+    shim_patch_size: 16
+    upsample_factor: 8
+    lowest_feature_resolution: 8
+    num_refine: 1
+    train_min_refine: 1
+    train_max_refine: 1
+    use_semantic_gaussian_features: true
+    semantic_feature_dim: 16
+    semantic_feature_projection_trainable: false
+    use_semantic_state_refinement: true
+    semantic_state_residual_gain: 0.1
+    semantic_feature_loss_weight: 0.1
+    use_semantic_residual_feedback: true
+    semantic_residual_alignment: raster_vjp
+    semantic_residual_alpha_floor: 0.1
+    semantic_vjp_direct_gain: 0.3
+    use_semantic_uncertainty_refinement: true
+    semantic_uncertainty_hidden_channels: 128
+    semantic_uncertainty_residual_gain: 0.25
+    semantic_uncertainty_need_floor: 0.25
+    semantic_uncertainty_reliability_floor: 0.05
+    semantic_uncertainty_support_relative_scale: 4.0
+    semantic_uncertainty_loss_weight: 0.1
+    use_semantic_support_refinement: true
+    semantic_support_hidden_channels: 256
+    semantic_support_opacity_gain: 0.1
+    semantic_support_scale_gain: 0.05
+    semantic_support_regularization_weight: 0.01
+    use_semantic_geometry_vjp: false
+    use_semantic_ray_depth_head: true
+    semantic_ray_depth_hidden_channels: 256
+    semantic_ray_depth_gain: 0.1
+    semantic_ray_depth_confidence_floor: 0.0
+    semantic_ray_depth_regularization_weight: 0.01
+    use_semantic_updater_adapter: true
+    semantic_updater_adapter_hidden_channels: 256
+    semantic_updater_adapter_gain: 0.1
+    semantic_updater_adapter_regularization_weight: 0.01
+    semantic_updater_adapter_train_only: true
+    semantic_updater_unfreeze_last_block: true
+    semantic_joint_train_new_heads: true
+
+loss:
+  lpips:
+    apply_after_step: 0
+    weight: 0.5
+    perceptual_loss: true
+
+dataset:
+  opencv_pose_format: true
+  near: 0.01
+  far: 200.0
+  baseline_scale_bounds: false
+  make_baseline_1: false
+  min_views: 0
+  max_views: 0
+  highres: false
+  mix_re10k: false
+  pose_align_middle_view: true
+  load_remain_context: false
+  random_crop: false
+  min_size: [384, 512]
+  max_size: [512, 960]
+
+train:
+  depth_smooth_loss_weight: 0.0
+
+test:
+  eval_time_skip_steps: 0
+  compute_scores: true
+  dec_chunk_size: 30

@@ -36,7 +36,11 @@ with install_import_hook(
     from src.model.decoder import get_decoder
     from src.model.encoder import get_encoder
     from src.model.model_wrapper import ModelWrapper
-    from src.model.semantic_gaussian import semantic_joint_parameter_trainable
+    from src.model.semantic_gaussian import (
+        semantic_joint_parameter_trainable,
+        semantic_updater_adapter_parameter_trainable,
+        semantic_updater_last_block_parameter_trainable,
+    )
 
 
 def cyan(text: str) -> str:
@@ -290,7 +294,9 @@ def train(cfg_dict: DictConfig):
         if cfg.model.encoder.num_refine > 0:
             print('train refine only')
             for name, params in model_wrapper.named_parameters():
-                if cfg.model.encoder.semantic_joint_train_new_heads:
+                if cfg.model.encoder.semantic_updater_adapter_train_only:
+                    trainable = semantic_updater_adapter_parameter_trainable(name)
+                elif cfg.model.encoder.semantic_joint_train_new_heads:
                     trainable = semantic_joint_parameter_trainable(name)
                 elif cfg.model.encoder.use_semantic_ray_depth_head:
                     trainable = 'encoder.semantic_ray_depth_head' in name
@@ -304,6 +310,13 @@ def train(cfg_dict: DictConfig):
                     trainable = 'encoder.update' in name
                     if cfg.model.encoder.use_semantic_gaussian_init:
                         trainable = trainable or 'encoder.semantic_init' in name
+                if cfg.model.encoder.semantic_updater_unfreeze_last_block:
+                    trainable = trainable or (
+                        semantic_updater_last_block_parameter_trainable(
+                            name,
+                            cfg.model.encoder.num_basic_refine_blocks,
+                        )
+                    )
                 if not trainable:
                     params.requires_grad = False
 

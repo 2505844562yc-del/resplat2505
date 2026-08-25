@@ -9,12 +9,15 @@ from src.model.semantic_gaussian import (
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
     apply_semantic_support_residual,
+    apply_semantic_updater_state_residual,
     apply_semantic_uncertainty_residual,
     confidence_gate_semantic_gradient_feedback,
     normalize_gaussian_visibility_support,
     project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
     semantic_joint_parameter_trainable,
+    semantic_updater_adapter_parameter_trainable,
+    semantic_updater_last_block_parameter_trainable,
     semantic_render_residual_features,
     semantic_uncertainty_components,
 )
@@ -27,6 +30,7 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
             "encoder.semantic_uncertainty_head.2.bias",
             "encoder.semantic_support_head.0.weight",
             "encoder.semantic_ray_depth_head.2.weight",
+            "encoder.semantic_updater_adapter.2.weight",
         ):
             self.assertTrue(semantic_joint_parameter_trainable(name))
 
@@ -38,6 +42,74 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
             "decoder.some_parameter",
         ):
             self.assertFalse(semantic_joint_parameter_trainable(name))
+
+    def test_adapter_only_selection_is_narrow(self):
+        self.assertTrue(
+            semantic_updater_adapter_parameter_trainable(
+                "encoder.semantic_updater_adapter.2.weight"
+            )
+        )
+        self.assertFalse(
+            semantic_updater_adapter_parameter_trainable(
+                "encoder.semantic_state_head.0.weight"
+            )
+        )
+
+    def test_last_updater_block_selection_is_exact(self):
+        self.assertTrue(
+            semantic_updater_last_block_parameter_trainable(
+                "encoder.update_module.1.blocks.3.mlp.fc2.weight", 4
+            )
+        )
+        self.assertFalse(
+            semantic_updater_last_block_parameter_trainable(
+                "encoder.update_module.1.blocks.2.mlp.fc2.weight", 4
+            )
+        )
+        self.assertFalse(
+            semantic_updater_last_block_parameter_trainable(
+                "encoder.update_head.6.weight", 4
+            )
+        )
+        with self.assertRaises(ValueError):
+            semantic_updater_last_block_parameter_trainable("anything", 0)
+
+
+class SemanticUpdaterStateResidualTest(unittest.TestCase):
+    def test_zero_residual_is_exact_identity(self):
+        state = torch.randn(5, 8)
+        output, applied = apply_semantic_updater_state_residual(
+            state, torch.zeros_like(state), torch.ones(5, 1), gain=0.1
+        )
+        self.assertTrue(torch.equal(output, state))
+        self.assertTrue(torch.equal(applied, torch.zeros_like(applied)))
+
+    def test_priority_gates_and_bounds_update(self):
+        state = torch.zeros(3, 4)
+        raw = torch.full_like(state, 1000.0)
+        priority = torch.tensor([[0.0], [0.5], [1.0]])
+        output, applied = apply_semantic_updater_state_residual(
+            state, raw, priority, gain=0.2
+        )
+        self.assertTrue(torch.equal(output[0], state[0]))
+        self.assertTrue(torch.allclose(applied[1], torch.full((4,), 0.1)))
+        self.assertTrue(torch.allclose(applied[2], torch.full((4,), 0.2)))
+        self.assertLessEqual(applied.abs().max().item(), 0.2 + 1e-6)
+
+    def test_invalid_shapes_and_gain_are_rejected(self):
+        state = torch.zeros(3, 4)
+        with self.assertRaises(ValueError):
+            apply_semantic_updater_state_residual(
+                state, torch.zeros(3, 3), torch.ones(3, 1)
+            )
+        with self.assertRaises(ValueError):
+            apply_semantic_updater_state_residual(
+                state, torch.zeros_like(state), torch.ones(3), gain=0.1
+            )
+        with self.assertRaises(ValueError):
+            apply_semantic_updater_state_residual(
+                state, torch.zeros_like(state), torch.ones(3, 1), gain=-0.1
+            )
 
 
 class SemanticFeatureProjectorTest(unittest.TestCase):

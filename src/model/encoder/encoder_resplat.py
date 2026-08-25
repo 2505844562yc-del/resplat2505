@@ -53,6 +53,7 @@ from ..semantic_gaussian import (
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
     apply_semantic_support_residual,
+    apply_semantic_updater_state_residual,
     apply_semantic_uncertainty_residual,
     confidence_gate_semantic_gradient_feedback,
     normalize_gaussian_visibility_support,
@@ -214,6 +215,12 @@ class EncoderReSplatCfg:
     semantic_ray_depth_gain: float
     semantic_ray_depth_confidence_floor: float
     semantic_ray_depth_regularization_weight: float
+    use_semantic_updater_adapter: bool
+    semantic_updater_adapter_hidden_channels: int
+    semantic_updater_adapter_gain: float
+    semantic_updater_adapter_regularization_weight: float
+    semantic_updater_adapter_train_only: bool
+    semantic_updater_unfreeze_last_block: bool
     semantic_joint_train_new_heads: bool
 
     # AMP (automatic mixed precision)
@@ -606,6 +613,27 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 raise ValueError(
                     "joint semantic-head training requires semantic state refinement"
                 )
+            if (
+                self.cfg.use_semantic_updater_adapter
+                and not self.cfg.use_semantic_uncertainty_refinement
+            ):
+                raise ValueError(
+                    "semantic updater adapter requires semantic uncertainty"
+                )
+            if (
+                self.cfg.semantic_updater_adapter_train_only
+                and not self.cfg.use_semantic_updater_adapter
+            ):
+                raise ValueError(
+                    "adapter-only training requires semantic updater adapter"
+                )
+            if (
+                self.cfg.semantic_updater_unfreeze_last_block
+                and not self.cfg.use_semantic_updater_adapter
+            ):
+                raise ValueError(
+                    "last-block unfreezing requires semantic updater adapter"
+                )
 
             if self.cfg.use_semantic_state_refinement:
                 if not self.cfg.use_semantic_gaussian_features:
@@ -792,6 +820,38 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     )
                     nn.init.zeros_(self.semantic_ray_depth_head[-1].weight)
                     nn.init.zeros_(self.semantic_ray_depth_head[-1].bias)
+
+                if self.cfg.use_semantic_updater_adapter:
+                    if self.cfg.semantic_updater_adapter_hidden_channels < 1:
+                        raise ValueError(
+                            "semantic_updater_adapter_hidden_channels must be positive"
+                        )
+                    if self.cfg.semantic_updater_adapter_gain < 0:
+                        raise ValueError(
+                            "semantic_updater_adapter_gain must be non-negative"
+                        )
+                    if self.cfg.semantic_updater_adapter_regularization_weight < 0:
+                        raise ValueError(
+                            "semantic updater adapter regularization must be "
+                            "non-negative"
+                        )
+                    # z contributes D channels, raster VJP contributes D+2,
+                    # and need/reliability/uncertainty/priority add four.
+                    adapter_channels = 2 * self.cfg.semantic_feature_dim + 6
+                    with torch.random.fork_rng(devices=[]):
+                        self.semantic_updater_adapter = nn.Sequential(
+                            nn.Linear(
+                                adapter_channels,
+                                self.cfg.semantic_updater_adapter_hidden_channels,
+                            ),
+                            nn.GELU(),
+                            nn.Linear(
+                                self.cfg.semantic_updater_adapter_hidden_channels,
+                                channels,
+                            ),
+                        )
+                    nn.init.zeros_(self.semantic_updater_adapter[-1].weight)
+                    nn.init.zeros_(self.semantic_updater_adapter[-1].bias)
 
             # ResNet-18 feature extractor (cached)
             self.update_feature = ResNetFeatureWarpper(
@@ -2330,6 +2390,82 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 else:
                     pxo = self.update_module[0]([point_cloud, concat, offset])
                     tmp_state = self.update_module[1](pxo, **refine_pt_kwargs) + tmp_state
+
+                if self.cfg.use_semantic_updater_adapter:
+                    if (
+                        prev_semantic_features is None
+                        or semantic_residual_feedback is None
+                        or semantic_uncertainty_need is None
+                        or semantic_uncertainty_reliability is None
+                        or semantic_uncertainty_base is None
+                        or semantic_uncertainty_priority is None
+                    ):
+                        raise RuntimeError(
+                            "semantic updater adapter requires aligned z, raster "
+                            "feedback, and uncertainty signals"
+                        )
+                    flat_semantic_state = rearrange(
+                        prev_semantic_features.detach(),
+                        "b n d -> (b n) d",
+                    )
+                    flat_adapter_signals = rearrange(
+                        torch.cat(
+                            (
+                                semantic_uncertainty_need,
+                                semantic_uncertainty_reliability,
+                                semantic_uncertainty_base,
+                                semantic_uncertainty_priority,
+                            ),
+                            dim=-1,
+                        ),
+                        "b n c -> (b n) c",
+                    )
+                    adapter_raw = self.semantic_updater_adapter(
+                        torch.cat(
+                            (
+                                flat_semantic_state,
+                                semantic_residual_feedback,
+                                flat_adapter_signals,
+                            ),
+                            dim=-1,
+                        )
+                    )
+                    flat_priority = rearrange(
+                        semantic_uncertainty_priority,
+                        "b n c -> (b n) c",
+                    )
+                    tmp_state, semantic_updater_delta = (
+                        apply_semantic_updater_state_residual(
+                            tmp_state,
+                            adapter_raw,
+                            flat_priority,
+                            gain=self.cfg.semantic_updater_adapter_gain,
+                        )
+                    )
+                    self.semantic_updater_adapter_regularization = (
+                        semantic_updater_delta.square().mean()
+                    )
+                    self.semantic_updater_adapter_diagnostics = {
+                        "state_delta_abs_mean": (
+                            semantic_updater_delta.abs().mean().detach()
+                        ),
+                        "state_delta_abs_max": (
+                            semantic_updater_delta.abs().max().detach()
+                        ),
+                        "priority_mean": flat_priority.mean().detach(),
+                        "active": (
+                            (flat_priority > 0).float().mean().detach()
+                        ),
+                    }
+                    if not hasattr(self, "_logged_semantic_updater_adapter_stats"):
+                        print(
+                            "semantic updater adapter: "
+                            f"state_mean={semantic_updater_delta.abs().mean().item():.7f}, "
+                            f"state_max={semantic_updater_delta.abs().max().item():.7f}, "
+                            f"priority={flat_priority.mean().item():.4f}, "
+                            f"active={(flat_priority > 0).float().mean().item():.4f}"
+                        )
+                        self._logged_semantic_updater_adapter_stats = True
 
                 # delta gaussian head
                 delta_gaussians = self.update_head(tmp_state)

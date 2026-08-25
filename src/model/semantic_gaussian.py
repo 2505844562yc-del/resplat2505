@@ -10,12 +10,54 @@ SEMANTIC_JOINT_HEAD_NAMES = (
     "encoder.semantic_uncertainty_head",
     "encoder.semantic_support_head",
     "encoder.semantic_ray_depth_head",
+    "encoder.semantic_updater_adapter",
 )
 
 
 def semantic_joint_parameter_trainable(name: str) -> bool:
     """Return whether a model parameter belongs to a promoted semantic head."""
     return any(token in name for token in SEMANTIC_JOINT_HEAD_NAMES)
+
+
+def semantic_updater_adapter_parameter_trainable(name: str) -> bool:
+    """Return whether a parameter belongs to the Stage-8 updater adapter."""
+    return "encoder.semantic_updater_adapter" in name
+
+
+def semantic_updater_last_block_parameter_trainable(
+    name: str, num_blocks: int
+) -> bool:
+    """Select only the last original recurrent point-transformer block."""
+    if num_blocks < 1:
+        raise ValueError("num_blocks must be positive")
+    token = f"encoder.update_module.1.blocks.{num_blocks - 1}."
+    return token in name
+
+
+def apply_semantic_updater_state_residual(
+    state: Tensor,
+    raw_residual: Tensor,
+    priority: Tensor,
+    gain: float = 0.1,
+) -> tuple[Tensor, Tensor]:
+    """Inject a bounded semantic residual into recurrent updater state.
+
+    The learned adapter chooses the residual direction while the detached
+    semantic priority limits where it can affect the mature ReSplat state.  The
+    returned residual is FP32 for stable diagnostics and regularization.
+    """
+    if state.shape != raw_residual.shape or state.ndim != 2:
+        raise ValueError("state and raw_residual must share shape [T, C]")
+    if priority.shape != state.shape[:1] + (1,):
+        raise ValueError("priority must have shape [T, 1]")
+    if gain < 0:
+        raise ValueError("semantic updater adapter gain must be non-negative")
+    applied = (
+        gain
+        * priority.detach().float().clamp(0, 1)
+        * torch.tanh(raw_residual.float())
+    )
+    return state + applied.to(state.dtype), applied
 
 
 class SemanticFeatureProjector(nn.Module):
