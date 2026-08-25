@@ -6,9 +6,11 @@ set -euo pipefail
 STEPS="${1:-500}"
 CHECKPOINT_INTERVAL="${2:-100}"
 PYTHON="${PYTHON:-/root/miniconda3/envs/resplat/bin/python}"
-SCENE="dl3dv_970a5c674c27b504d592d0a70c496d0e35ab0dc76802fb6e1bf336a4c1fe150a"
+SCENE="${V3_SCENE:-dl3dv_970a5c674c27b504d592d0a70c496d0e35ab0dc76802fb6e1bf336a4c1fe150a}"
+RUN_NAME="${V3_RUN_NAME:-single_scene_joint}"
+TRAIN_MAX_VIEWS="${V3_TRAIN_MAX_VIEWS:-120}"
 START_CKPT="outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt"
-OUT="outputs/v3_stage9_medium/single_scene_joint/${STEPS}steps"
+OUT="outputs/v3_stage9_medium/${RUN_NAME}/${STEPS}steps"
 
 if ! [[ "${STEPS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "steps must be a positive integer" >&2
@@ -41,7 +43,7 @@ CUDA_VISIBLE_DEVICES=0 "${PYTHON}" -m src.main \
   data_loader.val.persistent_workers=false \
   dataset.roots='[datasets/dl3dv_480p]' \
   dataset.overfit_to_scene="${SCENE}" \
-  dataset.overfit_max_views=120 \
+  dataset.overfit_max_views="${TRAIN_MAX_VIEWS}" \
   dataset.view_sampler.num_context_views=8 \
   dataset.view_sampler.num_target_views=2 \
   dataset.view_sampler.min_distance_between_context_views=24 \

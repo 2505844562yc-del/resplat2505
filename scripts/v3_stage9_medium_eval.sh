@@ -8,8 +8,10 @@ MODE="${1:-stage7c}"
 STEP="${2:-500}"
 TRAIN_STEPS="${3:-500}"
 PYTHON="${PYTHON:-/root/miniconda3/envs/resplat/bin/python}"
-SCENE="dl3dv_970a5c674c27b504d592d0a70c496d0e35ab0dc76802fb6e1bf336a4c1fe150a"
-INDEX="assets/dl3dv_evaluation/v3_stage9_medium_single_scene_heldout.json"
+SCENE="${V3_SCENE:-dl3dv_970a5c674c27b504d592d0a70c496d0e35ab0dc76802fb6e1bf336a4c1fe150a}"
+TRAIN_RUN_NAME="${V3_RUN_NAME:-single_scene_joint}"
+EVAL_TAG="${V3_EVAL_TAG:-}"
+INDEX="${V3_HELDOUT_INDEX:-assets/dl3dv_evaluation/v3_stage9_medium_single_scene_heldout.json}"
 STAGE7C_CKPT="outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt"
 
 case "${MODE}" in
@@ -17,16 +19,16 @@ case "${MODE}" in
     CHECKPOINT="${STAGE7C_CKPT}"
     USE_SPLIT=false
     USE_ADAPTER=false
-    EVAL_OUT="outputs/v3_stage9_medium/stage7c_heldout"
+    EVAL_OUT="outputs/v3_stage9_medium/${EVAL_TAG}stage7c_heldout"
     ;;
   identity)
     CHECKPOINT="${STAGE7C_CKPT}"
     USE_SPLIT=true
     USE_ADAPTER=true
-    EVAL_OUT="outputs/v3_stage9_medium/identity_heldout"
+    EVAL_OUT="outputs/v3_stage9_medium/${EVAL_TAG}identity_heldout"
     ;;
   joint_no_split|joint)
-    TRAIN_OUT="outputs/v3_stage9_medium/single_scene_joint/${TRAIN_STEPS}steps"
+    TRAIN_OUT="outputs/v3_stage9_medium/${TRAIN_RUN_NAME}/${TRAIN_STEPS}steps"
     CHECKPOINT="$(find "${TRAIN_OUT}/checkpoints" -maxdepth 1 -name "*step_${STEP}.ckpt" -print -quit)"
     if [[ "${MODE}" == "joint" ]]; then
       USE_SPLIT=true
@@ -34,7 +36,7 @@ case "${MODE}" in
       USE_SPLIT=false
     fi
     USE_ADAPTER=true
-    EVAL_OUT="outputs/v3_stage9_medium/${MODE}_step${STEP}_heldout"
+    EVAL_OUT="outputs/v3_stage9_medium/${EVAL_TAG}${MODE}_step${STEP}_heldout"
     ;;
   *)
     echo "unknown mode: ${MODE}" >&2
