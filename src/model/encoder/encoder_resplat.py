@@ -184,6 +184,16 @@ class EncoderReSplatCfg:
     semantic_init_depth_gain: float
     semantic_init_scale_gain: float
     semantic_init_auxiliary_loss_weight: float
+    use_semantic_depth_logit_adapter: bool
+    semantic_depth_hidden_channels: int
+    semantic_depth_max_logit_residual: float
+    semantic_depth_confidence_floor: float
+    semantic_depth_gate_bias: float
+    semantic_depth_kl_weight: float
+    semantic_depth_delta_weight: float
+    semantic_depth_init_rgb_loss_weight: float
+    semantic_depth_init_feature_loss_weight: float
+    semantic_depth_train_only: bool
     use_semantic_gaussian_features: bool
     semantic_feature_dim: int
     semantic_feature_teacher_layer: int
@@ -286,6 +296,23 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             no_upsample_depth=self.cfg.no_upsample_depth,
             use_amp=self.cfg.use_amp,
             return_raw_mono_features=True,
+            use_semantic_depth_logit_adapter=(
+                self.cfg.use_semantic_depth_logit_adapter
+            ),
+            semantic_feature_dim=self.cfg.semantic_feature_dim,
+            semantic_depth_teacher_layer=(
+                self.cfg.semantic_feature_teacher_layer
+            ),
+            semantic_depth_hidden_channels=(
+                self.cfg.semantic_depth_hidden_channels
+            ),
+            semantic_depth_max_logit_residual=(
+                self.cfg.semantic_depth_max_logit_residual
+            ),
+            semantic_depth_confidence_floor=(
+                self.cfg.semantic_depth_confidence_floor
+            ),
+            semantic_depth_gate_bias=self.cfg.semantic_depth_gate_bias,
         )
 
         # upsample features to the original resolution
@@ -322,6 +349,41 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 output_dim=self.cfg.semantic_feature_dim,
                 seed=self.cfg.semantic_feature_projection_seed,
                 trainable=self.cfg.semantic_feature_projection_trainable,
+            )
+        if (
+            self.cfg.use_semantic_depth_logit_adapter
+            and not self.cfg.use_semantic_gaussian_features
+        ):
+            raise ValueError(
+                "semantic depth initialization requires semantic Gaussian features"
+            )
+        if (
+            self.cfg.use_semantic_depth_logit_adapter
+            and self.cfg.use_semantic_gaussian_init
+        ):
+            raise ValueError(
+                "Situation A and the legacy post-depth semantic initializer "
+                "must not be enabled together"
+            )
+        if self.cfg.semantic_depth_kl_weight < 0:
+            raise ValueError("semantic depth KL weight must be non-negative")
+        if self.cfg.semantic_depth_delta_weight < 0:
+            raise ValueError("semantic depth delta weight must be non-negative")
+        if self.cfg.semantic_depth_init_rgb_loss_weight < 0:
+            raise ValueError(
+                "semantic depth initialization RGB loss weight must be non-negative"
+            )
+        if self.cfg.semantic_depth_init_feature_loss_weight < 0:
+            raise ValueError(
+                "semantic depth initialization feature loss weight must be "
+                "non-negative"
+            )
+        if (
+            self.cfg.semantic_depth_train_only
+            and not self.cfg.use_semantic_depth_logit_adapter
+        ):
+            raise ValueError(
+                "semantic depth adapter-only training requires the adapter"
             )
 
         # concat(img, depth, match_prob, features)
@@ -1020,6 +1082,11 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 intrinsics=context["intrinsics"],
                 extrinsics=context["extrinsics"],
                 nn_matrix=cameras_dist_index,
+                semantic_feature_projector=(
+                    self.semantic_feature_projector
+                    if self.cfg.use_semantic_depth_logit_adapter
+                    else None
+                ),
             )
 
             # upsample depth to the original resolution
@@ -1038,6 +1105,44 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 intrinsics=context["intrinsics"],
                 extrinsics=context["extrinsics"],
                 nn_matrix=cameras_dist_index,
+                semantic_feature_projector=(
+                    self.semantic_feature_projector
+                    if self.cfg.use_semantic_depth_logit_adapter
+                    else None
+                ),
+            )
+
+        if self.cfg.use_semantic_depth_logit_adapter:
+            semantic_depth_gates = results_dict["semantic_depth_gates"]
+            semantic_depth_residuals = results_dict[
+                "semantic_depth_logit_residuals"
+            ]
+            semantic_depth_deltas = results_dict[
+                "semantic_depth_candidate_deltas"
+            ]
+            semantic_depth_kl = results_dict["semantic_depth_kl_maps"]
+            self.semantic_depth_init_diagnostics = {
+                "gate_mean": torch.stack(
+                    [value.float().mean() for value in semantic_depth_gates]
+                ).mean(),
+                "gate_max": torch.stack(
+                    [value.float().amax() for value in semantic_depth_gates]
+                ).amax(),
+                "logit_residual_l1": torch.stack(
+                    [value.float().mean() for value in semantic_depth_residuals]
+                ).mean(),
+                "candidate_relative_delta": torch.stack(
+                    [value.float().mean() for value in semantic_depth_deltas]
+                ).mean(),
+                "distribution_kl": torch.stack(
+                    [value.float().mean() for value in semantic_depth_kl]
+                ).mean(),
+            }
+            self.semantic_depth_kl_regularization = (
+                self.semantic_depth_init_diagnostics["distribution_kl"]
+            )
+            self.semantic_depth_delta_regularization = (
+                self.semantic_depth_init_diagnostics["logit_residual_l1"]
             )
 
         # list of [B, V, H, W], with all the intermediate depths
@@ -1538,6 +1643,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
         gaussian_semantic_features = None
         if self.cfg.use_semantic_gaussian_features:
+            # Situation A passes this same DINO layer through this same shared
+            # projector inside the depth predictor. Project directly to the
+            # Gaussian grid here to preserve V3's exact z initialization when
+            # the zero-initialized depth residual is enabled.
             teacher_features = results_dict["raw_mono_features"][
                 self.cfg.semantic_feature_teacher_layer
             ].detach()
