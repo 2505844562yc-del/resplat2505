@@ -49,6 +49,7 @@ from ..semantic_initialization import (
 )
 from ..semantic_gaussian import (
     SemanticFeatureProjector,
+    apply_fixed_candidate_semantic_split,
     apply_priority_gated_ray_depth_residual,
     apply_semantic_geometry_vjp,
     apply_semantic_state_residual,
@@ -56,11 +57,13 @@ from ..semantic_gaussian import (
     apply_semantic_updater_state_residual,
     apply_semantic_uncertainty_residual,
     confidence_gate_semantic_gradient_feedback,
+    gather_gaussian_candidates,
     normalize_gaussian_visibility_support,
     project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
     semantic_render_residual_features,
     semantic_uncertainty_components,
+    select_fixed_semantic_candidates,
 )
 
 @dataclass
@@ -221,6 +224,14 @@ class EncoderReSplatCfg:
     semantic_updater_adapter_regularization_weight: float
     semantic_updater_adapter_train_only: bool
     semantic_updater_unfreeze_last_block: bool
+    use_semantic_fixed_candidate_split: bool
+    semantic_split_hidden_channels: int
+    semantic_split_candidate_ratio: float
+    semantic_split_opacity_fraction: float
+    semantic_split_depth_gain: float
+    semantic_split_scale_gain: float
+    semantic_split_regularization_weight: float
+    semantic_split_train_only: bool
     semantic_joint_train_new_heads: bool
 
     # AMP (automatic mixed precision)
@@ -634,6 +645,20 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 raise ValueError(
                     "last-block unfreezing requires semantic updater adapter"
                 )
+            if (
+                self.cfg.use_semantic_fixed_candidate_split
+                and not self.cfg.use_semantic_uncertainty_refinement
+            ):
+                raise ValueError(
+                    "fixed-candidate split requires semantic uncertainty"
+                )
+            if (
+                self.cfg.semantic_split_train_only
+                and not self.cfg.use_semantic_fixed_candidate_split
+            ):
+                raise ValueError(
+                    "split-only training requires fixed-candidate split"
+                )
 
             if self.cfg.use_semantic_state_refinement:
                 if not self.cfg.use_semantic_gaussian_features:
@@ -852,6 +877,46 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         )
                     nn.init.zeros_(self.semantic_updater_adapter[-1].weight)
                     nn.init.zeros_(self.semantic_updater_adapter[-1].bias)
+
+                if self.cfg.use_semantic_fixed_candidate_split:
+                    if self.cfg.semantic_split_hidden_channels < 1:
+                        raise ValueError(
+                            "semantic_split_hidden_channels must be positive"
+                        )
+                    if not 0 < self.cfg.semantic_split_candidate_ratio <= 1:
+                        raise ValueError(
+                            "semantic_split_candidate_ratio must satisfy "
+                            "0 < value <= 1"
+                        )
+                    if not 0 < self.cfg.semantic_split_opacity_fraction <= 0.5:
+                        raise ValueError(
+                            "semantic_split_opacity_fraction must satisfy "
+                            "0 < value <= 0.5"
+                        )
+                    if (
+                        self.cfg.semantic_split_depth_gain < 0
+                        or self.cfg.semantic_split_scale_gain < 0
+                    ):
+                        raise ValueError(
+                            "semantic fixed-candidate split gains must be non-negative"
+                        )
+                    if self.cfg.semantic_split_regularization_weight < 0:
+                        raise ValueError(
+                            "semantic split regularization must be non-negative"
+                        )
+                    split_channels = channels + self.cfg.semantic_feature_dim + 6
+                    with torch.random.fork_rng(devices=[]):
+                        self.semantic_split_head = nn.Sequential(
+                            nn.Linear(
+                                split_channels,
+                                self.cfg.semantic_split_hidden_channels,
+                            ),
+                            nn.GELU(),
+                            # Source-ray depth plus three log-scale residuals.
+                            nn.Linear(self.cfg.semantic_split_hidden_channels, 4),
+                        )
+                    nn.init.zeros_(self.semantic_split_head[-1].weight)
+                    nn.init.zeros_(self.semantic_split_head[-1].bias)
 
             # ResNet-18 feature extractor (cached)
             self.update_feature = ResNetFeatureWarpper(
@@ -2515,6 +2580,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 if (
                     self.cfg.use_semantic_support_refinement
                     or self.cfg.use_semantic_ray_depth_head
+                    or self.cfg.use_semantic_fixed_candidate_split
                 ):
                     calibrated_uncertainty = apply_semantic_uncertainty_residual(
                         semantic_uncertainty_base,
@@ -2569,6 +2635,25 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                             dim=-1,
                         )
                     )
+                semantic_split_raw = None
+                if self.cfg.use_semantic_fixed_candidate_split:
+                    if (
+                        semantic_residual_feedback is None
+                        or flat_support_signals is None
+                    ):
+                        raise RuntimeError(
+                            "semantic split requires gated Gaussian feedback"
+                        )
+                    semantic_split_raw = self.semantic_split_head(
+                        torch.cat(
+                            (
+                                tmp_state,
+                                semantic_residual_feedback,
+                                flat_support_signals,
+                            ),
+                            dim=-1,
+                        )
+                    )
                 semantic_selective_output = None
                 if semantic_selective_features is not None:
                     flat_semantic_features = rearrange(
@@ -2597,6 +2682,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             if semantic_ray_depth_raw is not None:
                 semantic_ray_depth_raw = rearrange(
                     semantic_ray_depth_raw, "(b n) c -> b n c", b=b
+                )
+            if semantic_split_raw is not None:
+                semantic_split_raw = rearrange(
+                    semantic_split_raw, "(b n) c -> b n c", b=b
                 )
 
             if self.cfg.init_gaussian_multiple > 1 and not self.cfg.refine_same_num_points:
@@ -2659,6 +2748,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 if semantic_ray_depth_raw is not None:
                     semantic_ray_depth_raw = (
                         semantic_ray_depth_raw.repeat_interleave(repeat, dim=1)
+                    )
+                if semantic_split_raw is not None:
+                    semantic_split_raw = semantic_split_raw.repeat_interleave(
+                        repeat, dim=1
                     )
                 if semantic_parameter_routes is not None:
                     semantic_parameter_routes = (
@@ -2927,15 +3020,169 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 semantic_uncertainty=prev_semantic_uncertainty,
             )
 
+            output_gaussians = prev_gaussians
+            if (
+                self.cfg.use_semantic_fixed_candidate_split
+                and i == num_refine - 1
+            ):
+                candidate_indices = select_fixed_semantic_candidates(
+                    semantic_uncertainty_priority,
+                    self.cfg.semantic_split_candidate_ratio,
+                )
+                if prev_means.shape[1] % v != 0:
+                    raise RuntimeError(
+                        "semantic split requires equal Gaussian counts per context view"
+                    )
+                points_per_view = prev_means.shape[1] // v
+                camera_origins = context["extrinsics"][
+                    ..., :3, 3
+                ].detach().repeat_interleave(points_per_view, dim=1)
+                split_rays = prev_means.detach() - camera_origins
+                (
+                    parent_opacities,
+                    child_means,
+                    child_scales,
+                    child_opacities,
+                    child_depth_delta,
+                    child_log_scale_delta,
+                    child_split_fraction,
+                ) = apply_fixed_candidate_semantic_split(
+                    prev_means,
+                    prev_scales,
+                    prev_gaussians.opacities,
+                    split_rays,
+                    semantic_split_raw,
+                    semantic_uncertainty_priority,
+                    candidate_indices,
+                    opacity_fraction=self.cfg.semantic_split_opacity_fraction,
+                    depth_gain=self.cfg.semantic_split_depth_gain,
+                    scale_gain=self.cfg.semantic_split_scale_gain,
+                    min_scale=self.cfg.gaussian_adapter.clamp_min_scale,
+                )
+                child_rotations = gather_gaussian_candidates(
+                    prev_rotations, candidate_indices
+                )
+                child_rotations_unnorm = gather_gaussian_candidates(
+                    prev_rotations_unnorm, candidate_indices
+                )
+                child_harmonics = gather_gaussian_candidates(
+                    prev_gaussians.harmonics, candidate_indices
+                )
+                child_semantic_features = gather_gaussian_candidates(
+                    prev_semantic_features, candidate_indices
+                )
+                child_semantic_uncertainty = gather_gaussian_candidates(
+                    prev_semantic_uncertainty, candidate_indices
+                )
+                child_covariances = build_covariance(
+                    child_scales, child_rotations
+                )
+                source_rotations = context["extrinsics"][
+                    ..., :3, :3
+                ].detach().unsqueeze(2).expand(
+                    -1, -1, points_per_view, -1, -1
+                )
+                source_rotations = rearrange(
+                    source_rotations,
+                    "b v n x y -> b (v n) x y",
+                )
+                child_source_rotations = gather_gaussian_candidates(
+                    source_rotations, candidate_indices
+                )
+                child_covariances = (
+                    child_source_rotations
+                    @ child_covariances
+                    @ child_source_rotations.transpose(-1, -2)
+                )
+                output_gaussians = Gaussians(
+                    means=torch.cat((prev_means, child_means), dim=1),
+                    covariances=torch.cat(
+                        (covariances, child_covariances), dim=1
+                    ),
+                    harmonics=torch.cat(
+                        (prev_gaussians.harmonics, child_harmonics), dim=1
+                    ),
+                    opacities=torch.cat(
+                        (parent_opacities, child_opacities), dim=1
+                    ),
+                    scales=torch.cat((prev_scales, child_scales), dim=1),
+                    rotations=torch.cat(
+                        (prev_rotations, child_rotations), dim=1
+                    ),
+                    rotations_unnorm=torch.cat(
+                        (prev_rotations_unnorm, child_rotations_unnorm), dim=1
+                    ),
+                    scale_factor=prev_gaussians.scale_factor,
+                    shift=prev_gaussians.shift,
+                    semantic_features=torch.cat(
+                        (prev_semantic_features, child_semantic_features), dim=1
+                    ),
+                    semantic_uncertainty=torch.cat(
+                        (
+                            prev_semantic_uncertainty,
+                            child_semantic_uncertainty,
+                        ),
+                        dim=1,
+                    ),
+                )
+                child_local_scale = child_scales.mean(
+                    dim=-1, keepdim=True
+                ).clamp_min(1e-8)
+                relative_child_depth = (
+                    child_depth_delta.abs() / child_local_scale
+                )
+                self.semantic_split_regularization = (
+                    relative_child_depth.square().mean()
+                    + child_log_scale_delta.square().mean()
+                )
+                self.semantic_split_diagnostics = {
+                    "candidate_ratio": torch.tensor(
+                        candidate_indices.shape[1] / prev_means.shape[1],
+                        device=prev_means.device,
+                    ),
+                    "output_count_ratio": torch.tensor(
+                        output_gaussians.means.shape[1] / prev_means.shape[1],
+                        device=prev_means.device,
+                    ),
+                    "selected_priority_mean": (
+                        child_split_fraction.mean().detach()
+                        / self.cfg.semantic_split_opacity_fraction
+                    ),
+                    "child_opacity_mean": child_opacities.mean().detach(),
+                    "child_opacity_max": child_opacities.max().detach(),
+                    "relative_depth_abs_mean": (
+                        relative_child_depth.mean().detach()
+                    ),
+                    "relative_depth_abs_max": (
+                        relative_child_depth.max().detach()
+                    ),
+                    "log_scale_delta_abs_mean": (
+                        child_log_scale_delta.abs().mean().detach()
+                    ),
+                    "log_scale_delta_abs_max": (
+                        child_log_scale_delta.abs().max().detach()
+                    ),
+                }
+                if not hasattr(self, "_logged_semantic_split_stats"):
+                    print(
+                        "fixed-candidate semantic split: "
+                        f"candidates={candidate_indices.shape[1]}/{prev_means.shape[1]}, "
+                        f"priority={self.semantic_split_diagnostics['selected_priority_mean'].item():.4f}, "
+                        f"opacity={child_opacities.mean().item():.7f}, "
+                        f"depth={relative_child_depth.mean().item():.7f}, "
+                        f"scale={child_log_scale_delta.abs().mean().item():.7f}"
+                    )
+                    self._logged_semantic_split_stats = True
+
             delta_means_all.append(delta_means)
             delta_scales_all.append(delta_scales)
 
-            gaussian_output.append(prev_gaussians)
+            gaussian_output.append(output_gaussians)
 
             # render target images
             if target is not None:
                 render_img = renderer.forward(
-                    prev_gaussians,
+                    output_gaussians,
                     target["extrinsics"],
                     target["intrinsics"],
                     target["near"],
@@ -2946,7 +3193,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
 
             # render input views for next iteration's error computation
             input_render = renderer.forward(
-                    prev_gaussians,
+                    output_gaussians,
                     context["extrinsics"],
                     context["intrinsics"],
                     context["near"],

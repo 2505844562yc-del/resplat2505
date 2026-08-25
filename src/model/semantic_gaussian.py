@@ -11,6 +11,7 @@ SEMANTIC_JOINT_HEAD_NAMES = (
     "encoder.semantic_support_head",
     "encoder.semantic_ray_depth_head",
     "encoder.semantic_updater_adapter",
+    "encoder.semantic_split_head",
 )
 
 
@@ -32,6 +33,128 @@ def semantic_updater_last_block_parameter_trainable(
         raise ValueError("num_blocks must be positive")
     token = f"encoder.update_module.1.blocks.{num_blocks - 1}."
     return token in name
+
+
+def semantic_split_parameter_trainable(name: str) -> bool:
+    """Return whether a parameter belongs to the fixed-candidate split head."""
+    return "encoder.semantic_split_head" in name
+
+
+def select_fixed_semantic_candidates(
+    priority: Tensor, candidate_ratio: float
+) -> Tensor:
+    """Select a fixed top-priority candidate budget for every batch item."""
+    if priority.ndim != 3 or priority.shape[-1] != 1:
+        raise ValueError("priority must have shape [B, G, 1]")
+    if not 0 < candidate_ratio <= 1:
+        raise ValueError("candidate_ratio must satisfy 0 < value <= 1")
+    candidate_count = max(1, round(priority.shape[1] * candidate_ratio))
+    return priority.squeeze(-1).topk(
+        candidate_count, dim=1, largest=True, sorted=False
+    ).indices
+
+
+def gather_gaussian_candidates(value: Tensor, indices: Tensor) -> Tensor:
+    if value.ndim < 2 or indices.ndim != 2 or value.shape[0] != indices.shape[0]:
+        raise ValueError("candidate gather expects [B, G, ...] and [B, K]")
+    gather_index = indices
+    for _ in range(value.ndim - 2):
+        gather_index = gather_index.unsqueeze(-1)
+    gather_index = gather_index.expand(
+        indices.shape + value.shape[2:]
+    )
+    return value.gather(1, gather_index)
+
+
+def apply_fixed_candidate_semantic_split(
+    means: Tensor,
+    scales: Tensor,
+    opacities: Tensor,
+    ray_directions: Tensor,
+    raw_residual: Tensor,
+    priority: Tensor,
+    candidate_indices: Tensor,
+    opacity_fraction: float = 0.25,
+    depth_gain: float = 0.1,
+    scale_gain: float = 0.05,
+    min_scale: float = 1e-6,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Create fixed-budget child Gaussians with opacity-mass conservation.
+
+    Parent opacity is reduced only for selected candidates.  Child opacity is
+    solved so two coincident, otherwise identical Gaussians have exactly the
+    parent's original accumulated alpha.
+    """
+    if means.ndim != 3 or means.shape[-1] != 3:
+        raise ValueError("means must have shape [B, G, 3]")
+    if scales.shape != means.shape or ray_directions.shape != means.shape:
+        raise ValueError("scales and ray_directions must match means")
+    if opacities.shape != means.shape[:2]:
+        raise ValueError("opacities must have shape [B, G]")
+    if raw_residual.shape != means.shape[:2] + (4,):
+        raise ValueError("raw_residual must have shape [B, G, 4]")
+    if priority.shape != means.shape[:2] + (1,):
+        raise ValueError("priority must have shape [B, G, 1]")
+    if candidate_indices.ndim != 2 or candidate_indices.shape[0] != means.shape[0]:
+        raise ValueError("candidate_indices must have shape [B, K]")
+    if not 0 < opacity_fraction <= 0.5:
+        raise ValueError("opacity_fraction must satisfy 0 < value <= 0.5")
+    if depth_gain < 0 or scale_gain < 0:
+        raise ValueError("split gains must be non-negative")
+    if min_scale <= 0:
+        raise ValueError("min_scale must be positive")
+
+    child_means_base = gather_gaussian_candidates(means, candidate_indices)
+    child_scales_base = gather_gaussian_candidates(scales, candidate_indices)
+    child_opacity_base = gather_gaussian_candidates(
+        opacities.unsqueeze(-1), candidate_indices
+    ).squeeze(-1)
+    child_rays = gather_gaussian_candidates(ray_directions, candidate_indices)
+    child_raw = gather_gaussian_candidates(raw_residual, candidate_indices)
+    child_priority = gather_gaussian_candidates(
+        priority, candidate_indices
+    ).float().clamp(0, 1)
+
+    split_fraction = opacity_fraction * child_priority
+    # Bound child opacity directly.  Solving parent opacity afterwards still
+    # conserves accumulated alpha but avoids near-opaque children when the
+    # original parent opacity is close to one.
+    child_opacity = child_opacity_base * split_fraction.squeeze(-1)
+    selected_parent_opacity = 1 - (
+        (1 - child_opacity_base)
+        / (1 - child_opacity).clamp_min(1e-6)
+    )
+    selected_parent_opacity = selected_parent_opacity.clamp(0, 1)
+
+    parent_opacities = opacities.clone()
+    parent_opacities.scatter_(1, candidate_indices, selected_parent_opacity)
+
+    local_scale = child_scales_base.mean(dim=-1, keepdim=True).clamp_min(min_scale)
+    unit_rays = child_rays / child_rays.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    depth_delta = (
+        depth_gain
+        * child_priority
+        * torch.tanh(child_raw[..., :1].float())
+        * local_scale.float()
+    )
+    log_scale_delta = (
+        scale_gain
+        * child_priority
+        * torch.tanh(child_raw[..., 1:].float())
+    )
+    child_means = child_means_base.float() + unit_rays.float() * depth_delta
+    child_scales = (
+        child_scales_base.float() * log_scale_delta.exp()
+    ).clamp_min(min_scale)
+    return (
+        parent_opacities,
+        child_means,
+        child_scales,
+        child_opacity,
+        depth_delta,
+        log_scale_delta,
+        split_fraction,
+    )
 
 
 def apply_semantic_updater_state_residual(

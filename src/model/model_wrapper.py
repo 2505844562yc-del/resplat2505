@@ -779,6 +779,9 @@ class ModelWrapper(LightningModule):
                 self.encoder.semantic_updater_adapter_diagnostics.items()
             ):
                 self.log(f"semantic_updater_adapter/{name}", value)
+        if hasattr(self.encoder, "semantic_split_diagnostics"):
+            for name, value in self.encoder.semantic_split_diagnostics.items():
+                self.log(f"semantic_split/{name}", value)
         if (
             self.encoder.cfg.use_semantic_support_refinement
             and self.encoder.cfg.semantic_support_regularization_weight > 0
@@ -823,6 +826,21 @@ class ModelWrapper(LightningModule):
             total_loss = total_loss + (
                 self.encoder.cfg.semantic_updater_adapter_regularization_weight
                 * semantic_updater_adapter_regularization
+            )
+        if (
+            self.encoder.cfg.use_semantic_fixed_candidate_split
+            and self.encoder.cfg.semantic_split_regularization_weight > 0
+        ):
+            semantic_split_regularization = (
+                self.encoder.semantic_split_regularization
+            )
+            self.log(
+                "loss/semantic_split_regularization",
+                semantic_split_regularization,
+            )
+            total_loss = total_loss + (
+                self.encoder.cfg.semantic_split_regularization_weight
+                * semantic_split_regularization
             )
 
         self.log("loss/total", total_loss)
@@ -1317,6 +1335,11 @@ class ModelWrapper(LightningModule):
             ):
                 self.test_step_outputs.setdefault(
                     f"semantic_updater_adapter_{name}", []
+                ).append(value.item())
+        if hasattr(self.encoder, "semantic_split_diagnostics"):
+            for name, value in self.encoder.semantic_split_diagnostics.items():
+                self.test_step_outputs.setdefault(
+                    f"semantic_split_{name}", []
                 ).append(value.item())
 
         # Render the pre-refinement Gaussians with exactly the same cameras.  This

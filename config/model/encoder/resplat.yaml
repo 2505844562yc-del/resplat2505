@@ -161,6 +161,14 @@ semantic_updater_adapter_gain: 0.1
 semantic_updater_adapter_regularization_weight: 0.01
 semantic_updater_adapter_train_only: false
 semantic_updater_unfreeze_last_block: false
+use_semantic_fixed_candidate_split: false
+semantic_split_hidden_channels: 256
+semantic_split_candidate_ratio: 0.25
+semantic_split_opacity_fraction: 0.1
+semantic_split_depth_gain: 0.1
+semantic_split_scale_gain: 0.05
+semantic_split_regularization_weight: 0.01
+semantic_split_train_only: false
 semantic_joint_train_new_heads: false
 
 # AMP

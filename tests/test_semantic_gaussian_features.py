@@ -4,6 +4,7 @@ import torch
 
 from src.model.semantic_gaussian import (
     SemanticFeatureProjector,
+    apply_fixed_candidate_semantic_split,
     apply_learned_ray_depth_residual,
     apply_priority_gated_ray_depth_residual,
     apply_semantic_geometry_vjp,
@@ -16,8 +17,10 @@ from src.model.semantic_gaussian import (
     project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
     semantic_joint_parameter_trainable,
+    semantic_split_parameter_trainable,
     semantic_updater_adapter_parameter_trainable,
     semantic_updater_last_block_parameter_trainable,
+    select_fixed_semantic_candidates,
     semantic_render_residual_features,
     semantic_uncertainty_components,
 )
@@ -31,6 +34,7 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
             "encoder.semantic_support_head.0.weight",
             "encoder.semantic_ray_depth_head.2.weight",
             "encoder.semantic_updater_adapter.2.weight",
+            "encoder.semantic_split_head.2.weight",
         ):
             self.assertTrue(semantic_joint_parameter_trainable(name))
 
@@ -73,6 +77,111 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             semantic_updater_last_block_parameter_trainable("anything", 0)
+
+    def test_split_only_selection_is_narrow(self):
+        self.assertTrue(
+            semantic_split_parameter_trainable(
+                "encoder.semantic_split_head.2.weight"
+            )
+        )
+        self.assertFalse(
+            semantic_split_parameter_trainable(
+                "encoder.semantic_updater_adapter.2.weight"
+            )
+        )
+
+
+class FixedCandidateSemanticSplitTest(unittest.TestCase):
+    def _inputs(self):
+        means = torch.tensor(
+            [[[0.0, 0.0, 1.0], [0.0, 0.0, 2.0], [0.0, 0.0, 3.0],
+              [0.0, 0.0, 4.0]]]
+        )
+        scales = torch.full_like(means, 0.2)
+        opacities = torch.tensor([[0.2, 0.4, 0.6, 0.8]])
+        raw = torch.zeros(1, 4, 4)
+        priority = torch.tensor([[[0.1], [0.9], [0.7], [0.0]]])
+        return means, scales, opacities, means.clone(), raw, priority
+
+    def test_fixed_budget_selects_highest_priority(self):
+        *_, priority = self._inputs()
+        indices = select_fixed_semantic_candidates(priority, 0.5)
+        self.assertEqual(indices.shape, (1, 2))
+        self.assertEqual(set(indices[0].tolist()), {1, 2})
+
+    def test_zero_residual_preserves_geometry_and_combined_alpha(self):
+        means, scales, opacities, rays, raw, priority = self._inputs()
+        indices = select_fixed_semantic_candidates(priority, 0.5)
+        (
+            parent_opacity,
+            child_means,
+            child_scales,
+            child_opacity,
+            depth_delta,
+            log_scale_delta,
+            _,
+        ) = apply_fixed_candidate_semantic_split(
+            means, scales, opacities, rays, raw, priority, indices
+        )
+        selected_means = means.gather(
+            1, indices[..., None].expand(-1, -1, 3)
+        )
+        selected_scales = scales.gather(
+            1, indices[..., None].expand(-1, -1, 3)
+        )
+        selected_original_opacity = opacities.gather(1, indices)
+        selected_parent_opacity = parent_opacity.gather(1, indices)
+        combined_alpha = 1 - (
+            (1 - selected_parent_opacity) * (1 - child_opacity)
+        )
+        self.assertTrue(torch.equal(child_means, selected_means))
+        self.assertTrue(torch.equal(child_scales, selected_scales))
+        self.assertTrue(torch.equal(depth_delta, torch.zeros_like(depth_delta)))
+        self.assertTrue(
+            torch.equal(log_scale_delta, torch.zeros_like(log_scale_delta))
+        )
+        self.assertTrue(
+            torch.allclose(combined_alpha, selected_original_opacity, atol=1e-6)
+        )
+
+    def test_updates_are_priority_gated_and_bounded(self):
+        means, scales, opacities, rays, raw, priority = self._inputs()
+        raw[..., 0] = 1000
+        raw[..., 1:] = -1000
+        indices = select_fixed_semantic_candidates(priority, 0.5)
+        result = apply_fixed_candidate_semantic_split(
+            means,
+            scales,
+            opacities,
+            rays,
+            raw,
+            priority,
+            indices,
+            depth_gain=0.1,
+            scale_gain=0.05,
+        )
+        depth_delta, log_scale_delta = result[4], result[5]
+        selected_priority = priority.squeeze(-1).gather(1, indices)
+        local_scale = scales.mean(dim=-1).gather(1, indices)
+        self.assertTrue(
+            torch.all(
+                depth_delta.squeeze(-1).abs()
+                <= 0.1 * selected_priority * local_scale + 1e-6
+            )
+        )
+        self.assertTrue(
+            torch.all(
+                log_scale_delta.abs()
+                <= 0.05 * selected_priority[..., None] + 1e-6
+            )
+        )
+
+    def test_invalid_configuration_is_rejected(self):
+        *_, priority = self._inputs()
+        with self.assertRaises(ValueError):
+            select_fixed_semantic_candidates(priority.squeeze(-1), 0.25)
+        with self.assertRaises(ValueError):
+            select_fixed_semantic_candidates(priority, 0.0)
 
 
 class SemanticUpdaterStateResidualTest(unittest.TestCase):
