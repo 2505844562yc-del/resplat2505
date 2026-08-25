@@ -257,3 +257,27 @@ improved PSNR by `0.00204` dB and SSIM by `0.000043`, while LPIPS regressed by
 The next optional architecture stage is fixed-candidate semantic splitting at
 high-priority semantic boundaries. Full multi-scene validation of Stages 7–8 is
 deferred, not eliminated, and remains mandatory before final paper claims.
+
+### Stage 9 — Fixed-candidate semantic Gaussian split
+
+**Status: engineering complete and promoted; longer validation deferred.**
+
+- Select a fixed 25% candidate budget using detached semantic correction priority.
+- Append one child Gaussian per selected parent, producing a fixed 1.25x count.
+- Inherit parent color, rotation, and semantic embedding.
+- Predict bounded child source-ray depth and log-scale residuals.
+- Conserve coincident parent/child accumulated alpha while limiting each child's
+  opacity share to `0.1 × priority`.
+- Apply the split only to the final refinement output, so recurrent token count
+  and cached KNN state remain unchanged.
+
+The split-only head learned non-zero child geometry in 50 steps while keeping RGB
+metrics effectively unchanged. A 20-step joint Stage 7–9 screen changed PSNR by
+`+0.00075` dB, SSIM by `+0.000041`, and LPIPS by `+0.000016` on five fixed samples.
+Semantic cosine changed by `-0.000041`. These mixed, tiny changes justify keeping
+the mechanism but not claiming a stable performance gain.
+
+The full first-paper architecture is now coherent through semantic state,
+rendered residual, uncertainty, semantic-conditioned recurrent refinement, and
+fixed-budget Gaussian allocation. The next recommended work is longer joint
+training and broader paired evaluation rather than another mandatory module.
