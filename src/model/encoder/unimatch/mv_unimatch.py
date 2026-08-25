@@ -665,7 +665,7 @@ class MultiViewUniMatch(nn.Module):
                             match_prob.clamp_min(1e-8).log()
                             - base_match_prob.detach().clamp_min(1e-8).log()
                         )
-                    ).sum(dim=1, keepdim=True)
+                    ).sum(dim=1, keepdim=True).clamp_min(0)
                 )
             else:
                 match_prob = base_match_prob
