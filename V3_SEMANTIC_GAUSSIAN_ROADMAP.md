@@ -234,3 +234,26 @@ The correct execution order from the current commit is:
 
 This route preserves all completed useful work and stops short-run noise from
 continually changing the architecture.
+
+### Stage 8 — Semantic-conditioned recurrent updater
+
+**Status: engineering complete and promoted; longer validation deferred.**
+
+- Concatenate Gaussian semantic state `z`, raster-VJP residual, semantic need,
+  reliability, uncertainty, and priority.
+- Map the semantic signals to the 512-D recurrent state with a two-layer adapter.
+- Zero-initialize the final adapter layer and apply a bounded, priority-gated
+  residual before the original Gaussian update head.
+- Provide an isolated adapter-only mode and a controlled mode that additionally
+  unfreezes only the last recurrent point-transformer block.
+- Preserve the original ReSplat configuration with Stage 8 disabled.
+
+The zero-initialized adapter exactly reproduced Stage 7C on five fixed samples.
+After 50 adapter-only steps it learned a non-zero state correction while RGB
+metrics remained numerically unchanged. A 20-step adapter-plus-last-block screen
+improved PSNR by `0.00204` dB and SSIM by `0.000043`, while LPIPS regressed by
+`0.000039`. This is a non-destructive engineering result, not a paper-level gain.
+
+The next optional architecture stage is fixed-candidate semantic splitting at
+high-priority semantic boundaries. Full multi-scene validation of Stages 7–8 is
+deferred, not eliminated, and remains mandatory before final paper claims.
