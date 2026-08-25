@@ -302,3 +302,24 @@ PSNR by less than `0.00005 dB`, so the split is not the source of the RGB drift.
 This validates stable medium-length learning and preserves Stage 9. The next
 recommended experiment is the same paired protocol on three scenes, using 200
 steps as the conservative checkpoint and 500 steps as the semantic endpoint.
+
+### Stage 9S — Three-scene screen and architecture freeze
+
+**Status: complete; first-paper architecture frozen for full training.**
+
+The same strict view-holdout protocol was repeated on three independently
+adapted scenes. At 200 steps, mean deltas versus Stage 7C were `+0.000398 dB`
+PSNR, `-0.000102` SSIM, `+0.000315` LPIPS, `+0.000289` semantic cosine, and
+`-0.001100` uncertainty MAE. Semantic cosine and uncertainty MAE improved on all
+three scenes. At 500 steps, semantic gains increased while RGB remained close
+to baseline but drifted slightly more.
+
+Split-on versus split-off evaluation changed PSNR by at most `0.00243 dB`, so
+fixed-candidate Gaussian allocation is retained. The architecture now passes the
+defined non-destructive engineering gates and should not receive another
+mandatory module before full multi-scene evidence is collected.
+
+The next phase is a continuous all-359-scene fine-tuning run from Stage 7C, with
+safety evaluation at 1k, continuation to 5k, and an optional 10k endpoint. This
+trains the 3.1 M semantic/last-updater parameter scope rather than restarting the
+224 M ReSplat backbone from scratch.
