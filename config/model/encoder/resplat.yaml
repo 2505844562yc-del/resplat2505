@@ -124,6 +124,7 @@ semantic_init_auxiliary_loss_weight: 0.25
 # Situation A: explicitly condition the pre-Gaussian depth distribution on the
 # same semantic field that becomes each Gaussian's semantic embedding z.
 use_semantic_depth_logit_adapter: false
+use_semantic_depth_feature_adapter: false
 semantic_depth_hidden_channels: 64
 semantic_depth_max_logit_residual: 0.25
 semantic_depth_confidence_floor: 0.05
@@ -133,6 +134,10 @@ semantic_depth_delta_weight: 0.01
 semantic_depth_init_rgb_loss_weight: 0.25
 semantic_depth_init_feature_loss_weight: 0.1
 semantic_depth_boundary_weight: 0.0
+semantic_depth_feature_hidden_channels: 64
+semantic_depth_max_feature_residual: 0.1
+semantic_depth_feature_confidence_floor: 0.05
+semantic_depth_feature_gate_bias: -2.0
 semantic_depth_train_only: false
 use_semantic_gaussian_features: false
 semantic_feature_dim: 16

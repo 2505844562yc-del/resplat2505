@@ -77,6 +77,115 @@ def boundary_weighted_semantic_feature_loss(
     return loss, weights, trusted_boundary, boundary_error
 
 
+class SemanticDepthFeatureAdapter(nn.Module):
+    """Apply a bounded semantic residual before the pretrained depth head.
+
+    The residual head is zero initialized, making the adapter an exact identity
+    at construction. Residual magnitude is expressed relative to the local RMS
+    of the frozen depth feature, which avoids a scene-dependent absolute scale.
+    """
+
+    def __init__(
+        self,
+        semantic_channels: int,
+        depth_feature_channels: int,
+        hidden_channels: int = 64,
+        max_relative_residual: float = 0.1,
+        confidence_floor: float = 0.05,
+        gate_bias: float = -2.0,
+    ) -> None:
+        super().__init__()
+        if min(semantic_channels, depth_feature_channels, hidden_channels) <= 0:
+            raise ValueError("all channel counts must be positive")
+        if hidden_channels < 2:
+            raise ValueError("hidden_channels must be at least 2")
+        if max_relative_residual < 0:
+            raise ValueError("max_relative_residual must be non-negative")
+        if not 0 <= confidence_floor <= 1:
+            raise ValueError("confidence_floor must lie in [0, 1]")
+
+        semantic_hidden = hidden_channels // 2
+        depth_hidden = hidden_channels - semantic_hidden
+        self.max_relative_residual = float(max_relative_residual)
+        self.confidence_floor = float(confidence_floor)
+        self.semantic_projection = nn.Sequential(
+            nn.Conv2d(semantic_channels, semantic_hidden, 1),
+            nn.GroupNorm(1, semantic_hidden),
+            nn.GELU(),
+        )
+        self.depth_projection = nn.Sequential(
+            nn.Conv2d(depth_feature_channels, depth_hidden, 1),
+            nn.GroupNorm(1, depth_hidden),
+            nn.GELU(),
+        )
+        self.fusion = nn.Sequential(
+            nn.Conv2d(hidden_channels, hidden_channels, 3, padding=1),
+            nn.GroupNorm(1, hidden_channels),
+            nn.GELU(),
+        )
+        self.residual_head = nn.Conv2d(
+            hidden_channels, depth_feature_channels, 3, padding=1
+        )
+        self.gate_head = nn.Conv2d(hidden_channels, 1, 3, padding=1)
+        nn.init.zeros_(self.residual_head.weight)
+        nn.init.zeros_(self.residual_head.bias)
+        nn.init.zeros_(self.gate_head.weight)
+        nn.init.constant_(self.gate_head.bias, gate_bias)
+
+    def forward(
+        self,
+        depth_features: torch.Tensor,
+        semantic_features: torch.Tensor,
+        base_logits: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if depth_features.ndim != 4 or semantic_features.ndim != 4:
+            raise ValueError("depth and semantic features must be 4D tensors")
+        if base_logits.ndim != 4:
+            raise ValueError("base logits must be a 4D tensor")
+        if depth_features.shape[0] != base_logits.shape[0]:
+            raise ValueError("depth features and logits must share a batch size")
+        if depth_features.shape[-2:] != base_logits.shape[-2:]:
+            raise ValueError("depth features and logits must share a resolution")
+        if semantic_features.shape[0] != depth_features.shape[0]:
+            raise ValueError("semantic and depth features must share a batch size")
+        if depth_features.shape[1] != self.residual_head.out_channels:
+            raise ValueError("unexpected number of depth feature channels")
+
+        semantic_features = F.interpolate(
+            semantic_features.float(),
+            size=depth_features.shape[-2:],
+            mode="bilinear",
+            align_corners=True,
+        )
+        encoded = self.fusion(
+            torch.cat(
+                (
+                    self.semantic_projection(semantic_features),
+                    self.depth_projection(depth_features.float()),
+                ),
+                dim=1,
+            )
+        )
+        local_scale = (
+            depth_features.detach().float().square().mean(dim=1, keepdim=True)
+            .sqrt().clamp_min(1e-3)
+        )
+        residual = (
+            self.max_relative_residual
+            * local_scale
+            * torch.tanh(self.residual_head(encoded))
+        )
+        depth_confidence = 1.0 - normalized_depth_entropy(base_logits).detach()
+        reliability = self.confidence_floor + (
+            1.0 - self.confidence_floor
+        ) * depth_confidence
+        gate = torch.sigmoid(self.gate_head(encoded)) * reliability
+        conditioned = depth_features + gate.to(depth_features.dtype) * residual.to(
+            depth_features.dtype
+        )
+        return conditioned, gate, residual
+
+
 class SemanticDepthLogitAdapter(nn.Module):
     """Predict a bounded semantic residual for the pre-Gaussian depth logits.
 

@@ -31,6 +31,7 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
     def test_all_promoted_heads_are_selected(self):
         for name in (
             "encoder.depth_predictor.semantic_depth_adapters.0.residual_head.weight",
+            "encoder.depth_predictor.semantic_depth_feature_adapters.0.residual_head.weight",
             "encoder.semantic_state_head.0.weight",
             "encoder.semantic_uncertainty_head.2.bias",
             "encoder.semantic_support_head.0.weight",
@@ -44,6 +45,11 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
         self.assertTrue(
             semantic_depth_parameter_trainable(
                 "encoder.depth_predictor.semantic_depth_adapters.0.gate_head.weight"
+            )
+        )
+        self.assertTrue(
+            semantic_depth_parameter_trainable(
+                "encoder.depth_predictor.semantic_depth_feature_adapters.0.gate_head.weight"
             )
         )
         self.assertFalse(

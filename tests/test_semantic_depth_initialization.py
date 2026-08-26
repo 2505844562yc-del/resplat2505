@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from src.model.semantic_depth_initialization import (
+    SemanticDepthFeatureAdapter,
     SemanticDepthLogitAdapter,
     boundary_weighted_semantic_feature_loss,
     normalized_depth_entropy,
@@ -79,6 +80,56 @@ class BoundaryWeightedSemanticFeatureLossTest(unittest.TestCase):
             boundary_weighted_semantic_feature_loss(
                 cosine, alpha, boundary, confidence, -1
             )
+
+
+class SemanticDepthFeatureAdapterTest(unittest.TestCase):
+    def _adapter(self, max_relative_residual=0.1):
+        return SemanticDepthFeatureAdapter(
+            semantic_channels=4,
+            depth_feature_channels=8,
+            hidden_channels=8,
+            max_relative_residual=max_relative_residual,
+        )
+
+    def _inputs(self):
+        depth = torch.randn(2, 8, 5, 7)
+        semantic = torch.randn(2, 4, 3, 4)
+        logits = torch.randn(2, 6, 5, 7)
+        return depth, semantic, logits
+
+    def test_zero_initialized_adapter_is_exact_identity(self):
+        adapter = self._adapter()
+        depth, semantic, logits = self._inputs()
+        conditioned, gate, residual = adapter(depth, semantic, logits)
+        self.assertTrue(torch.equal(conditioned, depth))
+        self.assertEqual(residual.count_nonzero().item(), 0)
+        self.assertTrue(torch.all((gate >= 0) & (gate <= 1)))
+
+    def test_feature_head_receives_gradient(self):
+        adapter = self._adapter()
+        depth, semantic, logits = self._inputs()
+        conditioned, _, _ = adapter(depth, semantic, logits)
+        conditioned.square().mean().backward()
+        gradient = adapter.residual_head.weight.grad
+        self.assertIsNotNone(gradient)
+        self.assertGreater(gradient.abs().sum().item(), 0)
+
+    def test_residual_is_bounded_relative_to_local_feature_scale(self):
+        adapter = self._adapter(max_relative_residual=0.2)
+        with torch.no_grad():
+            adapter.residual_head.bias.fill_(100)
+        depth, semantic, logits = self._inputs()
+        _, _, residual = adapter(depth, semantic, logits)
+        local_scale = depth.square().mean(dim=1, keepdim=True).sqrt().clamp_min(1e-3)
+        self.assertTrue(torch.all(residual.abs() <= 0.2 * local_scale + 1e-6))
+
+    def test_invalid_inputs_are_rejected(self):
+        adapter = self._adapter()
+        depth, semantic, logits = self._inputs()
+        with self.assertRaises(ValueError):
+            adapter(depth[:, :4], semantic, logits)
+        with self.assertRaises(ValueError):
+            adapter(depth, semantic[:1], logits)
 
 
 class SemanticDepthLogitAdapterTest(unittest.TestCase):

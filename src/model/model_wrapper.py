@@ -231,6 +231,7 @@ class ModelWrapper(LightningModule):
                     self.encoder.cfg.num_refine > 0
                     and not self.encoder.cfg.use_semantic_gaussian_init
                     and not self.encoder.cfg.use_semantic_depth_logit_adapter
+                    and not self.encoder.cfg.use_semantic_depth_feature_adapter
                 ):
                     with torch.no_grad():
                         curr_gaussians = self.encoder(
@@ -300,6 +301,7 @@ class ModelWrapper(LightningModule):
                 self.encoder.cfg.num_refine > 0
                 and not self.encoder.cfg.use_semantic_gaussian_init
                 and not self.encoder.cfg.use_semantic_depth_logit_adapter
+                and not self.encoder.cfg.use_semantic_depth_feature_adapter
             ):
                 with torch.no_grad():
                     gaussians = self.encoder(
@@ -896,6 +898,11 @@ class ModelWrapper(LightningModule):
         if hasattr(self.encoder, "semantic_depth_init_diagnostics"):
             for name, value in self.encoder.semantic_depth_init_diagnostics.items():
                 self.log(f"semantic_depth_init/{name}", value)
+        if hasattr(self.encoder, "semantic_depth_feature_diagnostics"):
+            for name, value in (
+                self.encoder.semantic_depth_feature_diagnostics.items()
+            ):
+                self.log(f"semantic_depth_feature/{name}", value)
         if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
             for name, value in self.encoder.semantic_uncertainty_diagnostics.items():
                 self.log(f"semantic_uncertainty/{name}", value)
@@ -1470,6 +1477,13 @@ class ModelWrapper(LightningModule):
             for name, value in self.encoder.semantic_depth_init_diagnostics.items():
                 self.test_step_outputs.setdefault(
                     f"semantic_depth_init_{name}", []
+                ).append(value.item())
+        if hasattr(self.encoder, "semantic_depth_feature_diagnostics"):
+            for name, value in (
+                self.encoder.semantic_depth_feature_diagnostics.items()
+            ):
+                self.test_step_outputs.setdefault(
+                    f"semantic_depth_feature_{name}", []
                 ).append(value.item())
         if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
             for name, value in self.encoder.semantic_uncertainty_diagnostics.items():

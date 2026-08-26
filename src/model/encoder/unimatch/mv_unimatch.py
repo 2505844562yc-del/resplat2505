@@ -14,7 +14,10 @@ from .dpt_head import DPTHead
 from .ldm_unet.unet import UNetModel, AttentionBlock
 from einops import rearrange
 from .dinov2.dinov2 import DINOv2
-from ...semantic_depth_initialization import SemanticDepthLogitAdapter
+from ...semantic_depth_initialization import (
+    SemanticDepthFeatureAdapter,
+    SemanticDepthLogitAdapter,
+)
 
 
 class MultiViewUniMatch(nn.Module):
@@ -43,12 +46,17 @@ class MultiViewUniMatch(nn.Module):
         max_mono_vit_input_size=560,  # constrain the input resolution to vit
         use_checkpointing=False,
         use_semantic_depth_logit_adapter=False,
+        use_semantic_depth_feature_adapter=False,
         semantic_feature_dim=16,
         semantic_depth_teacher_layer=-1,
         semantic_depth_hidden_channels=64,
         semantic_depth_max_logit_residual=0.25,
         semantic_depth_confidence_floor=0.05,
         semantic_depth_gate_bias=-2.0,
+        semantic_depth_feature_hidden_channels=64,
+        semantic_depth_max_feature_residual=0.1,
+        semantic_depth_feature_confidence_floor=0.05,
+        semantic_depth_feature_gate_bias=-2.0,
         **kwargs,
     ):
         super(MultiViewUniMatch, self).__init__()
@@ -64,8 +72,14 @@ class MultiViewUniMatch(nn.Module):
         self.return_raw_mono_features = return_raw_mono_features
         self.max_mono_vit_input_size = max_mono_vit_input_size
         self.use_semantic_depth_logit_adapter = use_semantic_depth_logit_adapter
+        self.use_semantic_depth_feature_adapter = (
+            use_semantic_depth_feature_adapter
+        )
         self.semantic_depth_teacher_layer = semantic_depth_teacher_layer
-        if self.use_semantic_depth_logit_adapter and not return_raw_mono_features:
+        if (
+            self.use_semantic_depth_logit_adapter
+            or self.use_semantic_depth_feature_adapter
+        ) and not return_raw_mono_features:
             raise ValueError(
                 "semantic depth initialization requires raw DINO features"
             )
@@ -134,6 +148,7 @@ class MultiViewUniMatch(nn.Module):
         self.regressor_residual = nn.ModuleList()
         self.depth_head = nn.ModuleList()
         self.semantic_depth_adapters = nn.ModuleList()
+        self.semantic_depth_feature_adapters = nn.ModuleList()
 
         for i in range(self.num_scales):
             curr_depth_candidates = num_depth_candidates // (4**i)
@@ -218,6 +233,21 @@ class MultiViewUniMatch(nn.Module):
                         gate_bias=semantic_depth_gate_bias,
                     )
                 )
+            if self.use_semantic_depth_feature_adapter:
+                self.semantic_depth_feature_adapters.append(
+                    SemanticDepthFeatureAdapter(
+                        semantic_channels=semantic_feature_dim,
+                        depth_feature_channels=channels,
+                        hidden_channels=semantic_depth_feature_hidden_channels,
+                        max_relative_residual=(
+                            semantic_depth_max_feature_residual
+                        ),
+                        confidence_floor=(
+                            semantic_depth_feature_confidence_floor
+                        ),
+                        gate_bias=semantic_depth_feature_gate_bias,
+                    )
+                )
 
         # upsampler
         # concat(lowres_depth, cnn feature, mv feature, mono feature)
@@ -296,6 +326,8 @@ class MultiViewUniMatch(nn.Module):
         semantic_depth_logit_residuals = []
         semantic_depth_candidate_deltas = []
         semantic_depth_kl_maps = []
+        semantic_depth_feature_gates = []
+        semantic_depth_feature_residuals = []
 
         # first normalize images
         images = self.normalize_images(images)
@@ -428,7 +460,10 @@ class MultiViewUniMatch(nn.Module):
 
         semantic_feature_source = None
         semantic_feature_projector = kwargs.get("semantic_feature_projector")
-        if self.use_semantic_depth_logit_adapter:
+        if (
+            self.use_semantic_depth_logit_adapter
+            or self.use_semantic_depth_feature_adapter
+        ):
             if semantic_feature_projector is None:
                 raise ValueError(
                     "semantic depth initialization requires a shared semantic "
@@ -638,6 +673,32 @@ class MultiViewUniMatch(nn.Module):
             # rather than introducing a second DINO branch.
             base_logits = self.depth_head[scale_idx](out)
             base_match_prob = F.softmax(base_logits, dim=1)
+            depth_features = out
+            if self.use_semantic_depth_feature_adapter:
+                projected_semantics = semantic_feature_projector(
+                    semantic_feature_source,
+                    output_size=out.shape[-2:],
+                )
+                (
+                    depth_features,
+                    semantic_feature_gate,
+                    semantic_feature_residual,
+                ) = self.semantic_depth_feature_adapters[scale_idx](
+                    out,
+                    projected_semantics,
+                    base_logits,
+                )
+                semantic_depth_feature_gates.append(semantic_feature_gate)
+                semantic_depth_feature_residuals.append(
+                    semantic_feature_residual.abs().mean(dim=1, keepdim=True)
+                    / out.detach().float().abs().mean(dim=1, keepdim=True)
+                    .clamp_min(1e-6)
+                )
+            feature_logits = (
+                self.depth_head[scale_idx](depth_features)
+                if self.use_semantic_depth_feature_adapter
+                else base_logits
+            )
             if self.use_semantic_depth_logit_adapter:
                 projected_semantics = semantic_feature_projector(
                     semantic_feature_source,
@@ -649,8 +710,8 @@ class MultiViewUniMatch(nn.Module):
                     semantic_logit_residual,
                     _,
                 ) = self.semantic_depth_adapters[scale_idx](
-                    base_logits,
-                    out,
+                    feature_logits,
+                    depth_features,
                     projected_semantics,
                 )
                 match_prob = F.softmax(depth_logits, dim=1)
@@ -668,7 +729,7 @@ class MultiViewUniMatch(nn.Module):
                     ).sum(dim=1, keepdim=True).clamp_min(0)
                 )
             else:
-                match_prob = base_match_prob
+                match_prob = F.softmax(feature_logits, dim=1)
             match_probs.append(match_prob)
 
             base_candidate_depth = (
@@ -752,6 +813,15 @@ class MultiViewUniMatch(nn.Module):
                         semantic_depth_candidate_deltas
                     ),
                     "semantic_depth_kl_maps": semantic_depth_kl_maps,
+                }
+            )
+        if self.use_semantic_depth_feature_adapter:
+            results_dict.update(
+                {
+                    "semantic_depth_feature_gates": semantic_depth_feature_gates,
+                    "semantic_depth_feature_residuals": (
+                        semantic_depth_feature_residuals
+                    ),
                 }
             )
 
