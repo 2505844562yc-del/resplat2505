@@ -234,20 +234,25 @@ class MultiViewUniMatch(nn.Module):
                     )
                 )
             if self.use_semantic_depth_feature_adapter:
-                self.semantic_depth_feature_adapters.append(
-                    SemanticDepthFeatureAdapter(
-                        semantic_channels=semantic_feature_dim,
-                        depth_feature_channels=channels,
-                        hidden_channels=semantic_depth_feature_hidden_channels,
-                        max_relative_residual=(
-                            semantic_depth_max_feature_residual
-                        ),
-                        confidence_floor=(
-                            semantic_depth_feature_confidence_floor
-                        ),
-                        gate_bias=semantic_depth_feature_gate_bias,
+                # Preserve the global RNG stream so enabling a zero-initialized
+                # ablation does not change the data sampler's view sequence.
+                with torch.random.fork_rng(devices=[]):
+                    self.semantic_depth_feature_adapters.append(
+                        SemanticDepthFeatureAdapter(
+                            semantic_channels=semantic_feature_dim,
+                            depth_feature_channels=channels,
+                            hidden_channels=(
+                                semantic_depth_feature_hidden_channels
+                            ),
+                            max_relative_residual=(
+                                semantic_depth_max_feature_residual
+                            ),
+                            confidence_floor=(
+                                semantic_depth_feature_confidence_floor
+                            ),
+                            gate_bias=semantic_depth_feature_gate_bias,
+                        )
                     )
-                )
 
         # upsampler
         # concat(lowres_depth, cnn feature, mv feature, mono feature)
