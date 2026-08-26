@@ -7,8 +7,10 @@ STEPS="${1:-20}"
 PYTHON="${PYTHON:-/root/miniconda3/envs/resplat/bin/python}"
 SCENE="${V4_SCENE:-dl3dv_970a5c674c27b504d592d0a70c496d0e35ab0dc76802fb6e1bf336a4c1fe150a}"
 LR="${V4_LR:-5e-5}"
+EXPERIMENT="${V4_EXPERIMENT:-v4_semantic_depth_init_a_dl3dv}"
+RUN_NAME="${V4_RUN_NAME:-adapter_only}"
 START_CKPT="outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt"
-OUT="outputs/v4_semantic_depth_init_a/adapter_only/${STEPS}steps"
+OUT="outputs/v4_semantic_depth_init_a/${RUN_NAME}/${STEPS}steps"
 
 if ! [[ "${STEPS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "steps must be a positive integer" >&2
@@ -25,7 +27,7 @@ if [[ -d "${OUT}/checkpoints" ]] \
 fi
 
 CUDA_VISIBLE_DEVICES=0 "${PYTHON}" -m src.main \
-  +experiment=v4_semantic_depth_init_a_dl3dv \
+  +experiment="${EXPERIMENT}" \
   wandb.mode=disabled \
   output_dir="${OUT}" \
   trainer.max_steps="${STEPS}" \
