@@ -10,17 +10,18 @@ SCENE="${V4_SCENE:-dl3dv_970a5c674c27b504d592d0a70c496d0e35ab0dc76802fb6e1bf336a
 INDEX="${V4_HELDOUT_INDEX:-assets/dl3dv_evaluation/v3_stage9_medium_single_scene_heldout.json}"
 EXPERIMENT="${V4_EXPERIMENT:-v4_semantic_depth_init_a_dl3dv}"
 RUN_NAME="${V4_RUN_NAME:-adapter_only}"
+OUTPUT_ROOT="${V4_OUTPUT_ROOT:-outputs/v4_semantic_depth_init_a}"
 START_CKPT="outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt"
 
 case "${MODE}" in
   identity)
     CHECKPOINT="${START_CKPT}"
-    OUT="outputs/v4_semantic_depth_init_a/${RUN_NAME}/identity_heldout"
+    OUT="${OUTPUT_ROOT}/${RUN_NAME}/identity_heldout"
     ;;
   trained)
-    TRAIN_OUT="outputs/v4_semantic_depth_init_a/${RUN_NAME}/${STEPS}steps"
+    TRAIN_OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps"
     CHECKPOINT="$(find "${TRAIN_OUT}/checkpoints" -maxdepth 1 -name '*.ckpt' -print -quit)"
-    OUT="outputs/v4_semantic_depth_init_a/${RUN_NAME}/${STEPS}steps_heldout"
+    OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps_heldout"
     ;;
   *)
     echo "mode must be identity or trained" >&2

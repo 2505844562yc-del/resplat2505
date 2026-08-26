@@ -9,8 +9,9 @@ SCENE="${V4_SCENE:-dl3dv_970a5c674c27b504d592d0a70c496d0e35ab0dc76802fb6e1bf336a
 LR="${V4_LR:-5e-5}"
 EXPERIMENT="${V4_EXPERIMENT:-v4_semantic_depth_init_a_dl3dv}"
 RUN_NAME="${V4_RUN_NAME:-adapter_only}"
+OUTPUT_ROOT="${V4_OUTPUT_ROOT:-outputs/v4_semantic_depth_init_a}"
 START_CKPT="outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt"
-OUT="outputs/v4_semantic_depth_init_a/${RUN_NAME}/${STEPS}steps"
+OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps"
 
 if ! [[ "${STEPS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "steps must be a positive integer" >&2
