@@ -4,6 +4,7 @@ import torch
 
 from src.model.semantic_depth_initialization import (
     SemanticDepthLogitAdapter,
+    boundary_weighted_semantic_feature_loss,
     normalized_depth_entropy,
 )
 
@@ -21,6 +22,63 @@ class NormalizedDepthEntropyTest(unittest.TestCase):
     def test_invalid_candidate_count_is_rejected(self):
         with self.assertRaises(ValueError):
             normalized_depth_entropy(torch.zeros(1, 1, 2, 2))
+
+
+class BoundaryWeightedSemanticFeatureLossTest(unittest.TestCase):
+    def _inputs(self):
+        cosine = torch.tensor([[[[0.9, 0.0], [0.8, 0.7]]]])
+        alpha = torch.ones_like(cosine)
+        boundary = torch.zeros(1, 1, 1, 2, 2)
+        boundary[..., 0, 1] = 1
+        confidence = torch.ones_like(boundary)
+        return cosine, alpha, boundary, confidence
+
+    def test_zero_weight_matches_valid_mean(self):
+        cosine, alpha, boundary, confidence = self._inputs()
+        loss, weights, trusted, boundary_error = (
+            boundary_weighted_semantic_feature_loss(
+                cosine, alpha, boundary, confidence, boundary_weight=0
+            )
+        )
+        self.assertTrue(torch.allclose(loss, (1 - cosine).mean()))
+        self.assertTrue(torch.equal(weights, torch.ones_like(cosine)))
+        self.assertEqual(trusted.sum().item(), 1)
+        self.assertAlmostEqual(boundary_error.item(), 1.0, places=6)
+
+    def test_boundary_weight_emphasizes_boundary_error(self):
+        cosine, alpha, boundary, confidence = self._inputs()
+        baseline = (1 - cosine).mean()
+        loss, weights, _, _ = boundary_weighted_semantic_feature_loss(
+            cosine, alpha, boundary, confidence, boundary_weight=4
+        )
+        self.assertGreater(loss.item(), baseline.item())
+        self.assertEqual(weights[0, 0, 0, 1].item(), 5.0)
+
+    def test_low_confidence_boundary_is_not_emphasized(self):
+        cosine, alpha, boundary, confidence = self._inputs()
+        confidence.zero_()
+        loss, weights, trusted, _ = boundary_weighted_semantic_feature_loss(
+            cosine,
+            alpha,
+            boundary,
+            confidence,
+            boundary_weight=4,
+            confidence_floor=0.5,
+        )
+        self.assertTrue(torch.allclose(loss, (1 - cosine).mean()))
+        self.assertTrue(torch.equal(weights, torch.ones_like(cosine)))
+        self.assertEqual(trusted.count_nonzero().item(), 0)
+
+    def test_invalid_shapes_and_ranges_are_rejected(self):
+        cosine, alpha, boundary, confidence = self._inputs()
+        with self.assertRaises(ValueError):
+            boundary_weighted_semantic_feature_loss(
+                cosine, alpha[..., :1], boundary, confidence, 1
+            )
+        with self.assertRaises(ValueError):
+            boundary_weighted_semantic_feature_loss(
+                cosine, alpha, boundary, confidence, -1
+            )
 
 
 class SemanticDepthLogitAdapterTest(unittest.TestCase):

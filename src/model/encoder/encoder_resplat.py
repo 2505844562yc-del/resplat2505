@@ -193,6 +193,7 @@ class EncoderReSplatCfg:
     semantic_depth_delta_weight: float
     semantic_depth_init_rgb_loss_weight: float
     semantic_depth_init_feature_loss_weight: float
+    semantic_depth_boundary_weight: float
     semantic_depth_train_only: bool
     use_semantic_gaussian_features: bool
     semantic_feature_dim: int
@@ -377,6 +378,10 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             raise ValueError(
                 "semantic depth initialization feature loss weight must be "
                 "non-negative"
+            )
+        if self.cfg.semantic_depth_boundary_weight < 0:
+            raise ValueError(
+                "semantic depth boundary weight must be non-negative"
             )
         if (
             self.cfg.semantic_depth_train_only

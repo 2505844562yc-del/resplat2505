@@ -132,6 +132,7 @@ semantic_depth_kl_weight: 0.01
 semantic_depth_delta_weight: 0.01
 semantic_depth_init_rgb_loss_weight: 0.25
 semantic_depth_init_feature_loss_weight: 0.1
+semantic_depth_boundary_weight: 0.0
 semantic_depth_train_only: false
 use_semantic_gaussian_features: false
 semantic_feature_dim: 16

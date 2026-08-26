@@ -57,6 +57,9 @@ from ..loss.loss_depth_smooth import get_smooth_loss
 from .types import Gaussians
 from .gaussian_utils import merge_gaussians
 from .semantic_boundary import balanced_boundary_l1, rgb_to_soft_boundary
+from .semantic_depth_initialization import (
+    boundary_weighted_semantic_feature_loss,
+)
 
 try:
     from bitsandbytes.optim import AdamW8bit
@@ -538,12 +541,55 @@ class ModelWrapper(LightningModule):
                     init_semantic_valid
                 )
                 if valid_init_cosine.numel() == 0:
-                    semantic_depth_init_feature_loss = (
+                    semantic_depth_init_unweighted_loss = (
                         1.0 - init_semantic_cosine.mean()
                     )
                 else:
-                    semantic_depth_init_feature_loss = (
+                    semantic_depth_init_unweighted_loss = (
                         1.0 - valid_init_cosine.mean()
+                    )
+                if self.encoder.cfg.semantic_depth_boundary_weight > 0:
+                    target_views = batch["target"]
+                    if (
+                        "boundary" not in target_views
+                        or "boundary_confidence" not in target_views
+                    ):
+                        raise KeyError(
+                            "boundary-weighted semantic depth initialization "
+                            "requires target boundary sidecars"
+                        )
+                    (
+                        semantic_depth_init_feature_loss,
+                        semantic_depth_boundary_weights,
+                        semantic_depth_trusted_boundary,
+                        semantic_depth_boundary_error,
+                    ) = boundary_weighted_semantic_feature_loss(
+                        init_semantic_cosine,
+                        semantic_depth_init_alpha,
+                        target_views["boundary"],
+                        target_views["boundary_confidence"],
+                        boundary_weight=(
+                            self.encoder.cfg.semantic_depth_boundary_weight
+                        ),
+                        confidence_floor=(
+                            self.encoder.cfg.semantic_boundary_confidence_floor
+                        ),
+                    )
+                    self.log(
+                        "semantic_depth_init/boundary_weight_mean",
+                        semantic_depth_boundary_weights.mean(),
+                    )
+                    self.log(
+                        "semantic_depth_init/trusted_boundary_fraction",
+                        (semantic_depth_trusted_boundary > 0).float().mean(),
+                    )
+                    self.log(
+                        "semantic_depth_init/boundary_feature_error",
+                        semantic_depth_boundary_error,
+                    )
+                else:
+                    semantic_depth_init_feature_loss = (
+                        semantic_depth_init_unweighted_loss
                     )
                 self.log(
                     "loss/semantic_depth_init_feature",
@@ -551,6 +597,10 @@ class ModelWrapper(LightningModule):
                 )
                 self.log(
                     "semantic_depth_init/target_cosine",
+                    1.0 - semantic_depth_init_unweighted_loss,
+                )
+                self.log(
+                    "semantic_depth_init/weighted_target_cosine",
                     1.0 - semantic_depth_init_feature_loss,
                 )
                 total_loss = total_loss + (

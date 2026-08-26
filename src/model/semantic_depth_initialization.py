@@ -19,6 +19,64 @@ def normalized_depth_entropy(logits: torch.Tensor) -> torch.Tensor:
     return entropy / math.log(logits.shape[1])
 
 
+def boundary_weighted_semantic_feature_loss(
+    cosine_similarity: torch.Tensor,
+    alpha: torch.Tensor,
+    boundary: torch.Tensor,
+    confidence: torch.Tensor,
+    boundary_weight: float,
+    confidence_floor: float = 0.5,
+    alpha_floor: float = 0.1,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Emphasize trusted semantic boundaries without changing loss scale.
+
+    Inputs use image layout [B, V, H, W]. Boundary and confidence may include
+    an additional singleton channel. The returned loss is normalized by the
+    applied weights, so enabling boundary emphasis does not simply multiply the
+    global semantic feature loss.
+    """
+    if cosine_similarity.ndim != 4 or alpha.shape != cosine_similarity.shape:
+        raise ValueError("cosine similarity and alpha must share [B, V, H, W]")
+    if boundary.ndim == 5 and boundary.shape[2] == 1:
+        boundary = boundary.squeeze(2)
+    if confidence.ndim == 5 and confidence.shape[2] == 1:
+        confidence = confidence.squeeze(2)
+    if boundary.shape != cosine_similarity.shape:
+        raise ValueError("boundary must align with the semantic render")
+    if confidence.shape != cosine_similarity.shape:
+        raise ValueError("boundary confidence must align with the semantic render")
+    if boundary_weight < 0:
+        raise ValueError("boundary_weight must be non-negative")
+    if not 0 <= confidence_floor <= 1:
+        raise ValueError("confidence_floor must lie in [0, 1]")
+    if not 0 <= alpha_floor <= 1:
+        raise ValueError("alpha_floor must lie in [0, 1]")
+
+    cosine_similarity = cosine_similarity.float()
+    alpha = alpha.float()
+    boundary = boundary.float().clamp(0, 1)
+    confidence = confidence.float().clamp(0, 1)
+    trusted_boundary = torch.where(
+        confidence >= confidence_floor,
+        boundary * confidence,
+        torch.zeros_like(boundary),
+    )
+    weights = 1.0 + boundary_weight * trusted_boundary
+    valid = alpha >= alpha_floor
+    if not torch.any(valid):
+        valid = torch.ones_like(valid)
+    valid_weight = weights * valid.to(weights.dtype)
+    semantic_error = 1.0 - cosine_similarity
+    loss = (semantic_error * valid_weight).sum() / valid_weight.sum().clamp_min(1)
+
+    trusted_valid = valid & (trusted_boundary > 0)
+    if torch.any(trusted_valid):
+        boundary_error = semantic_error.masked_select(trusted_valid).mean()
+    else:
+        boundary_error = semantic_error.new_zeros(())
+    return loss, weights, trusted_boundary, boundary_error
+
+
 class SemanticDepthLogitAdapter(nn.Module):
     """Predict a bounded semantic residual for the pre-Gaussian depth logits.
 
