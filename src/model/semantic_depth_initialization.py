@@ -186,6 +186,80 @@ class SemanticDepthFeatureAdapter(nn.Module):
         return conditioned, gate, residual
 
 
+class SemanticDepthResidualInjection(nn.Module):
+    """Screenshot Situation A: ``F_depth' = F_c + gamma * A(F_s)``.
+
+    ``F_c`` is the frozen ReSplat depth-regressor feature and ``F_s`` is the
+    shared low-dimensional semantic field.  The learnable scalar ``gamma`` is
+    initialized to exactly zero, so loading a pretrained ReSplat checkpoint and
+    enabling this module cannot change its initial depth prediction.
+
+    The semantic adapter itself is deliberately *not* zero initialized.  This
+    lets ``gamma`` receive a gradient on the first optimization step; once
+    ``gamma`` moves away from zero, gradients also reach the semantic adapter.
+    """
+
+    def __init__(
+        self,
+        semantic_channels: int,
+        depth_feature_channels: int,
+        hidden_channels: int = 64,
+        max_relative_residual: float = 0.1,
+    ) -> None:
+        super().__init__()
+        if min(semantic_channels, depth_feature_channels, hidden_channels) <= 0:
+            raise ValueError("all channel counts must be positive")
+        if max_relative_residual < 0:
+            raise ValueError("max_relative_residual must be non-negative")
+
+        self.depth_feature_channels = depth_feature_channels
+        self.max_relative_residual = float(max_relative_residual)
+        self.semantic_adapter = nn.Sequential(
+            nn.Conv2d(semantic_channels, hidden_channels, 1),
+            nn.GroupNorm(1, hidden_channels),
+            nn.GELU(),
+            nn.Conv2d(hidden_channels, hidden_channels, 3, padding=1),
+            nn.GroupNorm(1, hidden_channels),
+            nn.GELU(),
+            nn.Conv2d(hidden_channels, depth_feature_channels, 3, padding=1),
+        )
+        self.gamma = nn.Parameter(torch.zeros(()))
+
+    def forward(
+        self,
+        depth_features: torch.Tensor,
+        semantic_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if depth_features.ndim != 4 or semantic_features.ndim != 4:
+            raise ValueError("depth and semantic features must be 4D tensors")
+        if depth_features.shape[0] != semantic_features.shape[0]:
+            raise ValueError("semantic and depth features must share a batch size")
+        if depth_features.shape[1] != self.depth_feature_channels:
+            raise ValueError("unexpected number of depth feature channels")
+
+        semantic_features = F.interpolate(
+            semantic_features.float(),
+            size=depth_features.shape[-2:],
+            mode="bilinear",
+            align_corners=True,
+        )
+        adapter_output = torch.tanh(self.semantic_adapter(semantic_features))
+        local_scale = (
+            depth_features.detach().float().square().mean(dim=1, keepdim=True)
+            .sqrt()
+            .clamp_min(1e-3)
+        )
+        gamma = torch.tanh(self.gamma)
+        applied_residual = (
+            gamma
+            * self.max_relative_residual
+            * local_scale
+            * adapter_output
+        )
+        conditioned = depth_features + applied_residual.to(depth_features.dtype)
+        return conditioned, gamma, applied_residual
+
+
 class SemanticDepthLogitAdapter(nn.Module):
     """Predict a bounded semantic residual for the pre-Gaussian depth logits.
 

@@ -17,6 +17,7 @@ from src.model.semantic_gaussian import (
     project_geometry_feedback_to_rays,
     semantic_gradient_feedback_features,
     semantic_depth_parameter_trainable,
+    semantic_depth_last_layers_trainable,
     semantic_joint_parameter_trainable,
     semantic_split_parameter_trainable,
     semantic_updater_adapter_parameter_trainable,
@@ -32,6 +33,7 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
         for name in (
             "encoder.depth_predictor.semantic_depth_adapters.0.residual_head.weight",
             "encoder.depth_predictor.semantic_depth_feature_adapters.0.residual_head.weight",
+            "encoder.depth_predictor.semantic_depth_residual_injections.0.gamma",
             "encoder.semantic_state_head.0.weight",
             "encoder.semantic_uncertainty_head.2.bias",
             "encoder.semantic_support_head.0.weight",
@@ -52,11 +54,36 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
                 "encoder.depth_predictor.semantic_depth_feature_adapters.0.gate_head.weight"
             )
         )
+        self.assertTrue(
+            semantic_depth_parameter_trainable(
+                "encoder.depth_predictor.semantic_depth_residual_injections.0.gamma"
+            )
+        )
+        self.assertTrue(
+            semantic_depth_parameter_trainable(
+                "encoder.semantic_feature_projector.projection.weight"
+            )
+        )
         self.assertFalse(
             semantic_depth_parameter_trainable(
                 "encoder.depth_predictor.depth_head.0.2.weight"
             )
         )
+
+    def test_situation_a_staged_unfreeze_selects_only_depth_tail(self):
+        for name in (
+            "encoder.depth_predictor.regressor.0.1.out.2.weight",
+            "encoder.depth_predictor.regressor.0.2.weight",
+            "encoder.depth_predictor.depth_head.0.2.weight",
+        ):
+            self.assertTrue(semantic_depth_last_layers_trainable(name))
+        for name in (
+            "encoder.depth_predictor.regressor.0.1.input_blocks.0.0.weight",
+            "encoder.depth_predictor.pretrained.blocks.11.weight",
+            "encoder.depth_predictor.transformer.layers.0.weight",
+            "encoder.update_head.0.weight",
+        ):
+            self.assertFalse(semantic_depth_last_layers_trainable(name))
 
     def test_backbone_and_projector_remain_frozen(self):
         for name in (

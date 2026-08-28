@@ -38,6 +38,7 @@ with install_import_hook(
     from src.model.model_wrapper import ModelWrapper
     from src.model.semantic_gaussian import (
         semantic_depth_parameter_trainable,
+        semantic_depth_last_layers_trainable,
         semantic_joint_parameter_trainable,
         semantic_split_parameter_trainable,
         semantic_updater_adapter_parameter_trainable,
@@ -300,6 +301,10 @@ def train(cfg_dict: DictConfig):
                     trainable = semantic_split_parameter_trainable(name)
                 elif cfg.model.encoder.semantic_depth_train_only:
                     trainable = semantic_depth_parameter_trainable(name)
+                    if cfg.model.encoder.semantic_depth_unfreeze_last_layers:
+                        trainable = trainable or (
+                            semantic_depth_last_layers_trainable(name)
+                        )
                 elif cfg.model.encoder.semantic_updater_adapter_train_only:
                     trainable = semantic_updater_adapter_parameter_trainable(name)
                 elif cfg.model.encoder.semantic_joint_train_new_heads:

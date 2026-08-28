@@ -1,4 +1,4 @@
-"""Audit semantic depth-adapter updates against their V3 initialization."""
+"""Audit semantic depth-conditioning updates against pretrained ReSplat."""
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -9,6 +9,8 @@ import torch
 ADAPTER_TOKENS = {
     "logit": "encoder.depth_predictor.semantic_depth_adapters",
     "feature": "encoder.depth_predictor.semantic_depth_feature_adapters",
+    "situation_a": "encoder.depth_predictor.semantic_depth_residual_injections",
+    "semantic_projector": "encoder.semantic_feature_projector",
 }
 
 
@@ -61,36 +63,30 @@ def main() -> None:
     learned_residual = False
     print(f"adapter_group_count={len(adapters)}")
     for kind, adapter in adapters.items():
-        residual_values = torch.cat(
-            [
-                value.reshape(-1)
-                for name, value in adapter.items()
-                if "residual_head" in name
-            ]
-        )
-        gate_values = torch.cat(
-            [
-                value.reshape(-1)
-                for name, value in adapter.items()
-                if "gate_head.weight" in name
-            ]
-        )
-        residual_max = residual_values.abs().max().item()
-        learned_residual = learned_residual or residual_max > 0
         print(f"{kind}_adapter_tensor_count={len(adapter)}")
-        print(
-            f"{kind}_residual_head_abs_mean="
-            f"{residual_values.abs().mean().item():.9g}"
-        )
-        print(f"{kind}_residual_head_abs_max={residual_max:.9g}")
-        print(
-            f"{kind}_gate_head_weight_abs_mean="
-            f"{gate_values.abs().mean().item():.9g}"
-        )
-        print(
-            f"{kind}_gate_head_weight_abs_max="
-            f"{gate_values.abs().max().item():.9g}"
-        )
+        if kind == "situation_a":
+            gamma_values = torch.cat(
+                [value.reshape(-1) for name, value in adapter.items() if name.endswith(".gamma")]
+            )
+            gamma_max = gamma_values.abs().max().item()
+            learned_residual = learned_residual or gamma_max > 0
+            print(f"situation_a_gamma_abs_mean={gamma_values.abs().mean().item():.9g}")
+            print(f"situation_a_gamma_abs_max={gamma_max:.9g}")
+        elif kind in {"logit", "feature"}:
+            residual_values = torch.cat(
+                [
+                    value.reshape(-1)
+                    for name, value in adapter.items()
+                    if "residual_head" in name
+                ]
+            )
+            residual_max = residual_values.abs().max().item()
+            learned_residual = learned_residual or residual_max > 0
+            print(
+                f"{kind}_residual_head_abs_mean="
+                f"{residual_values.abs().mean().item():.9g}"
+            )
+            print(f"{kind}_residual_head_abs_max={residual_max:.9g}")
     print(f"base_tensors_compared={compared_base}")
     print(f"base_tensors_changed={len(changed_base)}")
     print(f"base_parameter_max_delta={maximum_base_delta:.9g}")
@@ -98,7 +94,7 @@ def main() -> None:
         print(f"changed_base={name}:{delta:.9g}")
 
     if not learned_residual:
-        raise RuntimeError("zero-initialized depth residual heads did not learn")
+        raise RuntimeError("semantic depth residual did not open from identity")
     if changed_base:
         raise RuntimeError("one or more pretrained base tensors changed")
 

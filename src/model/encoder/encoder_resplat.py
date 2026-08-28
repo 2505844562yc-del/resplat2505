@@ -186,6 +186,7 @@ class EncoderReSplatCfg:
     semantic_init_auxiliary_loss_weight: float
     use_semantic_depth_logit_adapter: bool
     use_semantic_depth_feature_adapter: bool
+    use_semantic_depth_residual_injection: bool
     semantic_depth_hidden_channels: int
     semantic_depth_max_logit_residual: float
     semantic_depth_confidence_floor: float
@@ -199,6 +200,9 @@ class EncoderReSplatCfg:
     semantic_depth_max_feature_residual: float
     semantic_depth_feature_confidence_floor: float
     semantic_depth_feature_gate_bias: float
+    semantic_depth_residual_hidden_channels: int
+    semantic_depth_residual_max_relative_gain: float
+    semantic_depth_unfreeze_last_layers: bool
     semantic_depth_train_only: bool
     use_semantic_gaussian_features: bool
     semantic_feature_dim: int
@@ -308,6 +312,9 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             use_semantic_depth_feature_adapter=(
                 self.cfg.use_semantic_depth_feature_adapter
             ),
+            use_semantic_depth_residual_injection=(
+                self.cfg.use_semantic_depth_residual_injection
+            ),
             semantic_feature_dim=self.cfg.semantic_feature_dim,
             semantic_depth_teacher_layer=(
                 self.cfg.semantic_feature_teacher_layer
@@ -333,6 +340,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             ),
             semantic_depth_feature_gate_bias=(
                 self.cfg.semantic_depth_feature_gate_bias
+            ),
+            semantic_depth_residual_hidden_channels=(
+                self.cfg.semantic_depth_residual_hidden_channels
+            ),
+            semantic_depth_residual_max_relative_gain=(
+                self.cfg.semantic_depth_residual_max_relative_gain
             ),
         )
 
@@ -372,18 +385,24 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 trainable=self.cfg.semantic_feature_projection_trainable,
             )
         if (
-            self.cfg.use_semantic_depth_logit_adapter
+            (
+                self.cfg.use_semantic_depth_logit_adapter
+                or self.cfg.use_semantic_depth_residual_injection
+            )
             and not self.cfg.use_semantic_gaussian_features
         ):
             raise ValueError(
                 "semantic depth initialization requires semantic Gaussian features"
             )
         if (
-            self.cfg.use_semantic_depth_logit_adapter
+            (
+                self.cfg.use_semantic_depth_logit_adapter
+                or self.cfg.use_semantic_depth_residual_injection
+            )
             and self.cfg.use_semantic_gaussian_init
         ):
             raise ValueError(
-                "Situation A and the legacy post-depth semantic initializer "
+                "semantic depth conditioning and the legacy post-depth initializer "
                 "must not be enabled together"
             )
         if self.cfg.semantic_depth_kl_weight < 0:
@@ -421,11 +440,26 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 raise ValueError(
                     "semantic depth feature confidence floor must lie in [0, 1]"
                 )
+        if self.cfg.use_semantic_depth_residual_injection:
+            if self.cfg.use_semantic_depth_feature_adapter:
+                raise ValueError(
+                    "screenshot Situation A and the legacy feature adapter "
+                    "must not be enabled together"
+                )
+            if self.cfg.semantic_depth_residual_hidden_channels < 1:
+                raise ValueError(
+                    "Situation A residual hidden channels must be positive"
+                )
+            if self.cfg.semantic_depth_residual_max_relative_gain < 0:
+                raise ValueError(
+                    "Situation A residual gain bound must be non-negative"
+                )
         if (
             self.cfg.semantic_depth_train_only
             and not (
                 self.cfg.use_semantic_depth_logit_adapter
                 or self.cfg.use_semantic_depth_feature_adapter
+                or self.cfg.use_semantic_depth_residual_injection
             )
         ):
             raise ValueError(
@@ -1133,6 +1167,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     if (
                         self.cfg.use_semantic_depth_logit_adapter
                         or self.cfg.use_semantic_depth_feature_adapter
+                        or self.cfg.use_semantic_depth_residual_injection
                     )
                     else None
                 ),
@@ -1159,6 +1194,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     if (
                         self.cfg.use_semantic_depth_logit_adapter
                         or self.cfg.use_semantic_depth_feature_adapter
+                        or self.cfg.use_semantic_depth_residual_injection
                     )
                     else None
                 ),
@@ -1180,6 +1216,32 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     [value.float().mean() for value in feature_residuals]
                 ).mean(),
             }
+
+        if self.cfg.use_semantic_depth_residual_injection:
+            situation_a_gammas = results_dict["situation_a_gammas"]
+            situation_a_residuals = results_dict[
+                "situation_a_relative_residuals"
+            ]
+            situation_a_depth_deltas = results_dict[
+                "semantic_depth_candidate_deltas"
+            ]
+            self.situation_a_diagnostics = {
+                "gamma": torch.stack(
+                    [value.float() for value in situation_a_gammas]
+                ).mean(),
+                "gamma_abs": torch.stack(
+                    [value.float().abs() for value in situation_a_gammas]
+                ).mean(),
+                "relative_residual_l1": torch.stack(
+                    [value.float().mean() for value in situation_a_residuals]
+                ).mean(),
+                "candidate_relative_delta": torch.stack(
+                    [value.float().mean() for value in situation_a_depth_deltas]
+                ).mean(),
+            }
+            self.semantic_depth_delta_regularization = (
+                self.situation_a_diagnostics["relative_residual_l1"]
+            )
 
         if self.cfg.use_semantic_depth_logit_adapter:
             semantic_depth_gates = results_dict["semantic_depth_gates"]

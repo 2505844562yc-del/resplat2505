@@ -232,6 +232,7 @@ class ModelWrapper(LightningModule):
                     and not self.encoder.cfg.use_semantic_gaussian_init
                     and not self.encoder.cfg.use_semantic_depth_logit_adapter
                     and not self.encoder.cfg.use_semantic_depth_feature_adapter
+                    and not self.encoder.cfg.use_semantic_depth_residual_injection
                 ):
                     with torch.no_grad():
                         curr_gaussians = self.encoder(
@@ -302,6 +303,7 @@ class ModelWrapper(LightningModule):
                 and not self.encoder.cfg.use_semantic_gaussian_init
                 and not self.encoder.cfg.use_semantic_depth_logit_adapter
                 and not self.encoder.cfg.use_semantic_depth_feature_adapter
+                and not self.encoder.cfg.use_semantic_depth_residual_injection
             ):
                 with torch.no_grad():
                     gaussians = self.encoder(
@@ -331,7 +333,10 @@ class ModelWrapper(LightningModule):
                     and self.encoder.cfg.semantic_init_auxiliary_loss_weight > 0
                 )
                 or (
-                    self.encoder.cfg.use_semantic_depth_logit_adapter
+                    (
+                        self.encoder.cfg.use_semantic_depth_logit_adapter
+                        or self.encoder.cfg.use_semantic_depth_residual_injection
+                    )
                     and self.encoder.cfg.semantic_depth_init_rgb_loss_weight > 0
                 )
             ):
@@ -345,7 +350,10 @@ class ModelWrapper(LightningModule):
                     depth_mode=None,
                 )
             if (
-                self.encoder.cfg.use_semantic_depth_logit_adapter
+                (
+                    self.encoder.cfg.use_semantic_depth_logit_adapter
+                    or self.encoder.cfg.use_semantic_depth_residual_injection
+                )
                 and self.encoder.cfg.semantic_depth_init_feature_loss_weight > 0
             ):
                 (
@@ -489,7 +497,10 @@ class ModelWrapper(LightningModule):
             # for the new initial geometry. The target view is used only here as
             # supervision; it is never fed to the initializer.
             if semantic_init_output is not None:
-                if self.encoder.cfg.use_semantic_depth_logit_adapter:
+                if (
+                    self.encoder.cfg.use_semantic_depth_logit_adapter
+                    or self.encoder.cfg.use_semantic_depth_residual_injection
+                ):
                     init_weight = (
                         self.encoder.cfg.semantic_depth_init_rgb_loss_weight
                     )
@@ -903,6 +914,9 @@ class ModelWrapper(LightningModule):
                 self.encoder.semantic_depth_feature_diagnostics.items()
             ):
                 self.log(f"semantic_depth_feature/{name}", value)
+        if hasattr(self.encoder, "situation_a_diagnostics"):
+            for name, value in self.encoder.situation_a_diagnostics.items():
+                self.log(f"situation_a/{name}", value)
         if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
             for name, value in self.encoder.semantic_uncertainty_diagnostics.items():
                 self.log(f"semantic_uncertainty/{name}", value)
@@ -930,7 +944,10 @@ class ModelWrapper(LightningModule):
                 self.encoder.cfg.semantic_depth_kl_weight * semantic_depth_kl
             )
         if (
-            self.encoder.cfg.use_semantic_depth_logit_adapter
+            (
+                self.encoder.cfg.use_semantic_depth_logit_adapter
+                or self.encoder.cfg.use_semantic_depth_residual_injection
+            )
             and self.encoder.cfg.semantic_depth_delta_weight > 0
         ):
             semantic_depth_delta = (
@@ -1484,6 +1501,11 @@ class ModelWrapper(LightningModule):
             ):
                 self.test_step_outputs.setdefault(
                     f"semantic_depth_feature_{name}", []
+                ).append(value.item())
+        if hasattr(self.encoder, "situation_a_diagnostics"):
+            for name, value in self.encoder.situation_a_diagnostics.items():
+                self.test_step_outputs.setdefault(
+                    f"situation_a_{name}", []
                 ).append(value.item())
         if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
             for name, value in self.encoder.semantic_uncertainty_diagnostics.items():

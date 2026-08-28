@@ -5,6 +5,7 @@ import torch
 from src.model.semantic_depth_initialization import (
     SemanticDepthFeatureAdapter,
     SemanticDepthLogitAdapter,
+    SemanticDepthResidualInjection,
     boundary_weighted_semantic_feature_loss,
     normalized_depth_entropy,
 )
@@ -130,6 +131,63 @@ class SemanticDepthFeatureAdapterTest(unittest.TestCase):
             adapter(depth[:, :4], semantic, logits)
         with self.assertRaises(ValueError):
             adapter(depth, semantic[:1], logits)
+
+
+class ScreenshotSituationAResidualInjectionTest(unittest.TestCase):
+    def _adapter(self, max_relative_residual=0.1):
+        return SemanticDepthResidualInjection(
+            semantic_channels=4,
+            depth_feature_channels=8,
+            hidden_channels=8,
+            max_relative_residual=max_relative_residual,
+        )
+
+    def _inputs(self):
+        return torch.randn(2, 8, 5, 7), torch.randn(2, 4, 3, 4)
+
+    def test_zero_gamma_is_exact_pretrained_identity(self):
+        adapter = self._adapter()
+        depth, semantic = self._inputs()
+        conditioned, gamma, applied = adapter(depth, semantic)
+        self.assertTrue(torch.equal(conditioned, depth))
+        self.assertEqual(gamma.item(), 0.0)
+        self.assertEqual(applied.count_nonzero().item(), 0)
+
+    def test_gamma_receives_gradient_on_first_step(self):
+        adapter = self._adapter()
+        depth, semantic = self._inputs()
+        conditioned, _, _ = adapter(depth, semantic)
+        conditioned.square().mean().backward()
+        self.assertIsNotNone(adapter.gamma.grad)
+        self.assertGreater(adapter.gamma.grad.abs().item(), 0)
+
+    def test_semantic_adapter_learns_after_gamma_opens(self):
+        adapter = self._adapter()
+        with torch.no_grad():
+            adapter.gamma.fill_(0.1)
+        depth, semantic = self._inputs()
+        conditioned, _, _ = adapter(depth, semantic)
+        conditioned.square().mean().backward()
+        gradient = adapter.semantic_adapter[-1].weight.grad
+        self.assertIsNotNone(gradient)
+        self.assertGreater(gradient.abs().sum().item(), 0)
+
+    def test_applied_residual_is_bounded_by_feature_scale(self):
+        adapter = self._adapter(max_relative_residual=0.2)
+        with torch.no_grad():
+            adapter.gamma.fill_(100)
+        depth, semantic = self._inputs()
+        _, _, applied = adapter(depth, semantic)
+        local_scale = depth.square().mean(dim=1, keepdim=True).sqrt().clamp_min(1e-3)
+        self.assertTrue(torch.all(applied.abs() <= 0.2 * local_scale + 1e-6))
+
+    def test_invalid_inputs_are_rejected(self):
+        adapter = self._adapter()
+        depth, semantic = self._inputs()
+        with self.assertRaises(ValueError):
+            adapter(depth[:, :4], semantic)
+        with self.assertRaises(ValueError):
+            adapter(depth, semantic[:1])
 
 
 class SemanticDepthLogitAdapterTest(unittest.TestCase):

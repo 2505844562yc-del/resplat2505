@@ -121,10 +121,13 @@ semantic_init_proximity_radius: 4
 semantic_init_depth_gain: 0.1
 semantic_init_scale_gain: 0.5
 semantic_init_auxiliary_loss_weight: 0.25
-# Situation A: explicitly condition the pre-Gaussian depth distribution on the
-# same semantic field that becomes each Gaussian's semantic embedding z.
+# Legacy late-logit and post-U-Net feature adapters are retained only for old
+# ablations; neither one is called Situation A anymore.
 use_semantic_depth_logit_adapter: false
 use_semantic_depth_feature_adapter: false
+# Screenshot Situation A: F_depth' = F_c + gamma * A(F_s), inserted after the
+# pretrained depth U-Net and immediately before its original depth head.
+use_semantic_depth_residual_injection: false
 semantic_depth_hidden_channels: 64
 semantic_depth_max_logit_residual: 0.25
 semantic_depth_confidence_floor: 0.05
@@ -138,6 +141,9 @@ semantic_depth_feature_hidden_channels: 64
 semantic_depth_max_feature_residual: 0.1
 semantic_depth_feature_confidence_floor: 0.05
 semantic_depth_feature_gate_bias: -2.0
+semantic_depth_residual_hidden_channels: 64
+semantic_depth_residual_max_relative_gain: 0.1
+semantic_depth_unfreeze_last_layers: false
 semantic_depth_train_only: false
 use_semantic_gaussian_features: false
 semantic_feature_dim: 16

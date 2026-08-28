@@ -8,6 +8,7 @@ from torch import Tensor, nn
 SEMANTIC_JOINT_HEAD_NAMES = (
     "encoder.depth_predictor.semantic_depth_adapters",
     "encoder.depth_predictor.semantic_depth_feature_adapters",
+    "encoder.depth_predictor.semantic_depth_residual_injections",
     "encoder.semantic_state_head",
     "encoder.semantic_uncertainty_head",
     "encoder.semantic_support_head",
@@ -29,8 +30,27 @@ def semantic_depth_parameter_trainable(name: str) -> bool:
         for token in (
             "encoder.depth_predictor.semantic_depth_adapters",
             "encoder.depth_predictor.semantic_depth_feature_adapters",
+            "encoder.depth_predictor.semantic_depth_residual_injections",
+            "encoder.semantic_feature_projector",
         )
     )
+
+
+def semantic_depth_last_layers_trainable(name: str) -> bool:
+    """Select the final pretrained depth-decoding layers for staged tuning.
+
+    The default Situation A stage keeps these frozen.  A later stage may tune
+    only the U-Net output projection, the enclosing regressor projection, and
+    the original depth head without opening the complete ReSplat backbone.
+    """
+    if ".depth_predictor.depth_head." in name:
+        return True
+    parts = name.split(".")
+    if "regressor" not in parts:
+        return False
+    regressor_index = parts.index("regressor")
+    tail = parts[regressor_index + 2 :]
+    return bool(tail) and (tail[0] == "2" or tail[:2] == ["1", "out"])
 
 
 def semantic_updater_adapter_parameter_trainable(name: str) -> bool:
