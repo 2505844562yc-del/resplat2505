@@ -50,7 +50,7 @@ def semantic_depth_last_layers_trainable(name: str) -> bool:
         return False
     regressor_index = parts.index("regressor")
     tail = parts[regressor_index + 2 :]
-    return bool(tail) and (tail[0] == "2" or tail[:2] == ["1", "out"])
+    return bool(tail) and (tail[0] == "4" or tail[:2] == ["3", "out"])
 
 
 def semantic_updater_adapter_parameter_trainable(name: str) -> bool:

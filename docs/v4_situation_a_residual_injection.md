@@ -81,6 +81,20 @@ V4_RUN_NAME=a2_tune_depth_tail \
 bash scripts/v4_situation_a_train.sh 50
 ```
 
+The A2 route was also checked end to end with a one-step smoke run:
+
+- trainable parameters increased from about 124K to about 1.0M;
+- all 10 intended depth-tail tensors changed;
+- maximum allowed depth-tail delta was `4.95910645e-05`;
+- no protected pretrained tensor changed;
+- the audit compares A2 against its A1 starting checkpoint and requires at
+  least one intended depth-tail update.
+
+The smoke test initially exposed an incorrect sequential-module index in the
+freeze selector. The final selector uses the actual ReSplat layout: U-Net at
+`regressor.*.3`, its output projection at `.3.out`, and the enclosing final
+convolution at `regressor.*.4`. Tests now use these real parameter paths.
+
 ## Verification completed
 
 ### Unit and configuration tests

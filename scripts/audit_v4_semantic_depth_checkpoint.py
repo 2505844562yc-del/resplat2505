@@ -14,6 +14,17 @@ ADAPTER_TOKENS = {
 }
 
 
+def is_depth_tail(name: str) -> bool:
+    if ".depth_predictor.depth_head." in name:
+        return True
+    parts = name.split(".")
+    if "regressor" not in parts:
+        return False
+    regressor_index = parts.index("regressor")
+    tail = parts[regressor_index + 2 :]
+    return bool(tail) and (tail[0] == "4" or tail[:2] == ["3", "out"])
+
+
 def state_dict(path: Path) -> dict[str, torch.Tensor]:
     checkpoint = torch.load(path, map_location="cpu")
     return checkpoint.get("state_dict", checkpoint)
@@ -23,6 +34,11 @@ def main() -> None:
     parser = ArgumentParser()
     parser.add_argument("base", type=Path)
     parser.add_argument("trained", type=Path)
+    parser.add_argument(
+        "--allow-depth-tail",
+        action="store_true",
+        help="allow and require changes in the staged depth-tail layers",
+    )
     args = parser.parse_args()
 
     base = state_dict(args.base)
@@ -40,6 +56,9 @@ def main() -> None:
         raise RuntimeError("trained checkpoint contains no semantic depth adapters")
 
     changed_base = []
+    changed_depth_tail = []
+    compared_depth_tail = 0
+    maximum_depth_tail_delta = 0.0
     compared_base = 0
     maximum_base_delta = 0.0
     for name, base_value in base.items():
@@ -56,6 +75,12 @@ def main() -> None:
             continue
         compared_base += 1
         delta = (trained_value.float() - base_value.float()).abs().max().item()
+        if args.allow_depth_tail and is_depth_tail(name):
+            compared_depth_tail += 1
+            maximum_depth_tail_delta = max(maximum_depth_tail_delta, delta)
+            if delta != 0:
+                changed_depth_tail.append((name, delta))
+            continue
         maximum_base_delta = max(maximum_base_delta, delta)
         if delta != 0:
             changed_base.append((name, delta))
@@ -90,6 +115,10 @@ def main() -> None:
     print(f"base_tensors_compared={compared_base}")
     print(f"base_tensors_changed={len(changed_base)}")
     print(f"base_parameter_max_delta={maximum_base_delta:.9g}")
+    if args.allow_depth_tail:
+        print(f"depth_tail_tensors_compared={compared_depth_tail}")
+        print(f"depth_tail_tensors_changed={len(changed_depth_tail)}")
+        print(f"depth_tail_parameter_max_delta={maximum_depth_tail_delta:.9g}")
     for name, delta in sorted(changed_base, key=lambda item: item[1], reverse=True)[:5]:
         print(f"changed_base={name}:{delta:.9g}")
 
@@ -97,6 +126,8 @@ def main() -> None:
         raise RuntimeError("semantic depth residual did not open from identity")
     if changed_base:
         raise RuntimeError("one or more pretrained base tensors changed")
+    if args.allow_depth_tail and not changed_depth_tail:
+        raise RuntimeError("staged depth-tail layers did not update")
 
 
 if __name__ == "__main__":

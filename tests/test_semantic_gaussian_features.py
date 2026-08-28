@@ -72,13 +72,13 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
 
     def test_situation_a_staged_unfreeze_selects_only_depth_tail(self):
         for name in (
-            "encoder.depth_predictor.regressor.0.1.out.2.weight",
-            "encoder.depth_predictor.regressor.0.2.weight",
+            "encoder.depth_predictor.regressor.0.3.out.2.weight",
+            "encoder.depth_predictor.regressor.0.4.weight",
             "encoder.depth_predictor.depth_head.0.2.weight",
         ):
             self.assertTrue(semantic_depth_last_layers_trainable(name))
         for name in (
-            "encoder.depth_predictor.regressor.0.1.input_blocks.0.0.weight",
+            "encoder.depth_predictor.regressor.0.3.input_blocks.0.0.weight",
             "encoder.depth_predictor.pretrained.blocks.11.weight",
             "encoder.depth_predictor.transformer.layers.0.weight",
             "encoder.update_head.0.weight",
