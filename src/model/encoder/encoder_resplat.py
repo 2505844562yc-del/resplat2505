@@ -1232,6 +1232,12 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 "gamma_abs": torch.stack(
                     [value.float().abs() for value in situation_a_gammas]
                 ).mean(),
+                "gamma_abs_max": torch.stack(
+                    [value.float().abs().amax() for value in situation_a_gammas]
+                ).amax(),
+                "gamma_active_fraction": torch.cat(
+                    [value.float().abs().reshape(-1) for value in situation_a_gammas]
+                ).gt(1e-5).float().mean(),
                 "relative_residual_l1": torch.stack(
                     [value.float().mean() for value in situation_a_residuals]
                 ).mean(),

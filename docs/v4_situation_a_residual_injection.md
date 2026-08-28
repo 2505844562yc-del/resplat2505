@@ -12,7 +12,7 @@ F'_{\mathrm{depth}} = F_c + \gamma A(F_s), \qquad \gamma_0 = 0.
 - `F_c`: output of the original ReSplat depth U-Net/regressor.
 - `F_s`: the shared 16-D semantic field projected from the frozen DINO teacher.
 - `A`: a trainable semantic adapter that maps `F_s` to the depth-feature width.
-- `gamma`: a learnable scalar initialized to exactly zero.
+- `gamma`: a learnable per-depth-channel gate initialized to exactly zero.
 - `F'_depth`: input to ReSplat's original pretrained depth head.
 
 The old candidate-logit residual remains available only as a legacy ablation
@@ -39,7 +39,8 @@ centres.  It is not a post-hoc correction of already-created Gaussian geometry.
 
 ## Stability choices
 
-1. `gamma` is exactly zero at initialization, giving exact pretrained identity.
+1. Every channel of `gamma` is exactly zero at initialization, giving exact
+   pretrained identity while avoiding cross-channel gradient cancellation.
 2. `A(F_s)` is not zero initialized. This avoids the deadlock where both the
    adapter and `gamma` receive zero gradients.
 3. The applied residual is bounded relative to the local RMS magnitude of
@@ -116,6 +117,38 @@ Situation A diagnostics were all exactly zero before training.
 
 This proves the path is both learnable and non-destructive. The one-step metric
 values are only an engineering smoke test, not evidence of final quality.
+
+### 50-step gate refinement
+
+The first implementation used one global scalar `gamma`. After 50 steps it
+returned from `9.83e-05` to `4.16e-06`, so different feature-channel gradients
+were cancelling and the complete semantic geometry path was nearly closed. That
+version remains recoverable at tag `v4-situation-a-implementation`.
+
+The final A implementation uses a zero-initialized gate for each depth-feature
+channel. It preserves exact identity but lets useful channels open independently.
+On the same deterministic 50-step screen:
+
+- mean absolute channel gate: `1.55494909e-05`;
+- maximum absolute channel gate: `6.67973247e-04`;
+- fraction of channels with `|gamma| > 1e-5`: `14.84375%`;
+- relative applied feature residual: `6.57510384e-07`;
+- relative candidate-depth change: `1.44502046e-08`;
+- candidate-depth change was about 20.5x the scalar-gate version;
+- all 812 audited pretrained tensors still had exactly zero change.
+
+| metric | baseline | channel-gated A (50 steps) | difference |
+|---|---:|---:|---:|
+| PSNR | 34.6062737 | 34.6051636 | -0.0011101 dB |
+| SSIM | 0.9654933 | 0.9654944 | +0.0000011 |
+| LPIPS | 0.0631811 | 0.0632019 | +0.0000208 |
+| initial PSNR | 32.9934235 | 32.9930458 | -0.0003777 dB |
+| initial SSIM | 0.9557191 | 0.9557213 | +0.0000021 |
+
+This short screen meets the engineering goal: the semantic path is active,
+the baseline is not materially damaged, and the original model stays frozen.
+It is not a paper-level multi-scene accuracy claim; that belongs to the later
+formal training/ablation phase.
 
 ## Files
 

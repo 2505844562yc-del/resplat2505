@@ -190,9 +190,11 @@ class SemanticDepthResidualInjection(nn.Module):
     """Screenshot Situation A: ``F_depth' = F_c + gamma * A(F_s)``.
 
     ``F_c`` is the frozen ReSplat depth-regressor feature and ``F_s`` is the
-    shared low-dimensional semantic field.  The learnable scalar ``gamma`` is
-    initialized to exactly zero, so loading a pretrained ReSplat checkpoint and
-    enabling this module cannot change its initial depth prediction.
+    shared low-dimensional semantic field. The learnable channel-wise gate
+    ``gamma`` is initialized to exactly zero, so loading a pretrained ReSplat
+    checkpoint and enabling this module cannot change its initial depth
+    prediction. Channel-wise gating avoids destructive gradient cancellation
+    between unrelated depth-feature channels.
 
     The semantic adapter itself is deliberately *not* zero initialized.  This
     lets ``gamma`` receive a gradient on the first optimization step; once
@@ -223,7 +225,9 @@ class SemanticDepthResidualInjection(nn.Module):
             nn.GELU(),
             nn.Conv2d(hidden_channels, depth_feature_channels, 3, padding=1),
         )
-        self.gamma = nn.Parameter(torch.zeros(()))
+        self.gamma = nn.Parameter(
+            torch.zeros(1, depth_feature_channels, 1, 1)
+        )
 
     def forward(
         self,

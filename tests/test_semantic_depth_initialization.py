@@ -150,7 +150,8 @@ class ScreenshotSituationAResidualInjectionTest(unittest.TestCase):
         depth, semantic = self._inputs()
         conditioned, gamma, applied = adapter(depth, semantic)
         self.assertTrue(torch.equal(conditioned, depth))
-        self.assertEqual(gamma.item(), 0.0)
+        self.assertEqual(gamma.count_nonzero().item(), 0)
+        self.assertEqual(gamma.shape, (1, 8, 1, 1))
         self.assertEqual(applied.count_nonzero().item(), 0)
 
     def test_gamma_receives_gradient_on_first_step(self):
@@ -159,7 +160,7 @@ class ScreenshotSituationAResidualInjectionTest(unittest.TestCase):
         conditioned, _, _ = adapter(depth, semantic)
         conditioned.square().mean().backward()
         self.assertIsNotNone(adapter.gamma.grad)
-        self.assertGreater(adapter.gamma.grad.abs().item(), 0)
+        self.assertGreater(adapter.gamma.grad.abs().sum().item(), 0)
 
     def test_semantic_adapter_learns_after_gamma_opens(self):
         adapter = self._adapter()
