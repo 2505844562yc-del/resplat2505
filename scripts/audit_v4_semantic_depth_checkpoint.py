@@ -10,6 +10,7 @@ ADAPTER_TOKENS = {
     "logit": "encoder.depth_predictor.semantic_depth_adapters",
     "feature": "encoder.depth_predictor.semantic_depth_feature_adapters",
     "situation_a": "encoder.depth_predictor.semantic_depth_residual_injections",
+    "situation_b": "encoder.depth_predictor.semantic_depth_concat_projections",
     "semantic_projector": "encoder.semantic_feature_projector",
 }
 
@@ -97,6 +98,17 @@ def main() -> None:
             learned_residual = learned_residual or gamma_max > 0
             print(f"situation_a_gamma_abs_mean={gamma_values.abs().mean().item():.9g}")
             print(f"situation_a_gamma_abs_max={gamma_max:.9g}")
+        elif kind == "situation_b":
+            concat_values = torch.cat(
+                [value.reshape(-1) for value in adapter.values()]
+            )
+            concat_max = concat_values.abs().max().item()
+            learned_residual = learned_residual or concat_max > 0
+            print(
+                "situation_b_semantic_slice_abs_mean="
+                f"{concat_values.abs().mean().item():.9g}"
+            )
+            print(f"situation_b_semantic_slice_abs_max={concat_max:.9g}")
         elif kind in {"logit", "feature"}:
             residual_values = torch.cat(
                 [
@@ -123,7 +135,7 @@ def main() -> None:
         print(f"changed_base={name}:{delta:.9g}")
 
     if not learned_residual:
-        raise RuntimeError("semantic depth residual did not open from identity")
+        raise RuntimeError("semantic depth conditioning did not open from identity")
     if changed_base:
         raise RuntimeError("one or more pretrained base tensors changed")
     if args.allow_depth_tail and not changed_depth_tail:
