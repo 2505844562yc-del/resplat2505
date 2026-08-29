@@ -264,6 +264,66 @@ class SemanticDepthResidualInjection(nn.Module):
         return conditioned, gamma, applied_residual
 
 
+class SemanticDepthConcatProjection(nn.Module):
+    """Screenshot Situation B's trainable semantic input-channel slices.
+
+    A convolution over ``Concat(F_c, F_s)`` can be written exactly as the sum
+    of one convolution over ``F_c`` and one over ``F_s``.  ReSplat's original
+    convolutions remain untouched and checkpoint-compatible; this module owns
+    only the new semantic-channel weights.  Zero initialization therefore
+    reproduces the pretrained model bit-for-bit while still allowing the new
+    weights to receive gradients on the first optimization step.
+    """
+
+    def __init__(
+        self,
+        semantic_channels: int,
+        depth_feature_channels: int,
+    ) -> None:
+        super().__init__()
+        if semantic_channels < 1 or depth_feature_channels < 1:
+            raise ValueError("semantic and depth feature channels must be positive")
+        self.semantic_channels = semantic_channels
+        self.main_projection = nn.Conv2d(
+            semantic_channels,
+            depth_feature_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            bias=False,
+        )
+        self.residual_projection = nn.Conv2d(
+            semantic_channels,
+            depth_feature_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            bias=False,
+        )
+        nn.init.zeros_(self.main_projection.weight)
+        nn.init.zeros_(self.residual_projection.weight)
+
+    def forward(
+        self,
+        semantic_features: torch.Tensor,
+        output_size: tuple[int, int],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if semantic_features.ndim != 4:
+            raise ValueError("semantic features must have shape [N, C, H, W]")
+        if semantic_features.shape[1] != self.semantic_channels:
+            raise ValueError("unexpected semantic feature channel count")
+        semantic_features = F.interpolate(
+            semantic_features,
+            size=output_size,
+            mode="bilinear",
+            align_corners=True,
+        )
+        return (
+            self.main_projection(semantic_features),
+            self.residual_projection(semantic_features),
+        )
+
+
 class SemanticDepthLogitAdapter(nn.Module):
     """Predict a bounded semantic residual for the pre-Gaussian depth logits.
 

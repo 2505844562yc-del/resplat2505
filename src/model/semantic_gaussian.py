@@ -9,6 +9,7 @@ SEMANTIC_JOINT_HEAD_NAMES = (
     "encoder.depth_predictor.semantic_depth_adapters",
     "encoder.depth_predictor.semantic_depth_feature_adapters",
     "encoder.depth_predictor.semantic_depth_residual_injections",
+    "encoder.depth_predictor.semantic_depth_concat_projections",
     "encoder.semantic_state_head",
     "encoder.semantic_uncertainty_head",
     "encoder.semantic_support_head",
@@ -31,6 +32,7 @@ def semantic_depth_parameter_trainable(name: str) -> bool:
             "encoder.depth_predictor.semantic_depth_adapters",
             "encoder.depth_predictor.semantic_depth_feature_adapters",
             "encoder.depth_predictor.semantic_depth_residual_injections",
+            "encoder.depth_predictor.semantic_depth_concat_projections",
             "encoder.semantic_feature_projector",
         )
     )

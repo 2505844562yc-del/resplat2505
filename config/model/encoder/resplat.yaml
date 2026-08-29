@@ -128,6 +128,9 @@ use_semantic_depth_feature_adapter: false
 # Screenshot Situation A: F_depth' = F_c + gamma * A(F_s), inserted after the
 # pretrained depth U-Net and immediately before its original depth head.
 use_semantic_depth_residual_injection: false
+# Screenshot Situation B: F_depth' = Concat(F_c, F_s) before the original
+# depth U-Net.  New semantic input-channel weights are initialized to zero.
+use_semantic_depth_direct_concat: false
 semantic_depth_hidden_channels: 64
 semantic_depth_max_logit_residual: 0.25
 semantic_depth_confidence_floor: 0.05

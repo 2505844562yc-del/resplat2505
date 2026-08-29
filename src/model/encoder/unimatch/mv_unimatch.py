@@ -15,6 +15,7 @@ from .ldm_unet.unet import UNetModel, AttentionBlock
 from einops import rearrange
 from .dinov2.dinov2 import DINOv2
 from ...semantic_depth_initialization import (
+    SemanticDepthConcatProjection,
     SemanticDepthFeatureAdapter,
     SemanticDepthLogitAdapter,
     SemanticDepthResidualInjection,
@@ -49,6 +50,7 @@ class MultiViewUniMatch(nn.Module):
         use_semantic_depth_logit_adapter=False,
         use_semantic_depth_feature_adapter=False,
         use_semantic_depth_residual_injection=False,
+        use_semantic_depth_direct_concat=False,
         semantic_feature_dim=16,
         semantic_depth_teacher_layer=-1,
         semantic_depth_hidden_channels=64,
@@ -82,19 +84,23 @@ class MultiViewUniMatch(nn.Module):
         self.use_semantic_depth_residual_injection = (
             use_semantic_depth_residual_injection
         )
-        if (
-            self.use_semantic_depth_feature_adapter
-            and self.use_semantic_depth_residual_injection
-        ):
+        self.use_semantic_depth_direct_concat = use_semantic_depth_direct_concat
+        semantic_depth_modes = (
+            int(self.use_semantic_depth_feature_adapter)
+            + int(self.use_semantic_depth_residual_injection)
+            + int(self.use_semantic_depth_direct_concat)
+        )
+        if semantic_depth_modes > 1:
             raise ValueError(
-                "legacy feature adapter and screenshot Situation A residual "
-                "injection must not be enabled together"
+                "legacy feature adapter, screenshot Situation A, and screenshot "
+                "Situation B must be mutually exclusive"
             )
         self.semantic_depth_teacher_layer = semantic_depth_teacher_layer
         if (
             self.use_semantic_depth_logit_adapter
             or self.use_semantic_depth_feature_adapter
             or self.use_semantic_depth_residual_injection
+            or self.use_semantic_depth_direct_concat
         ) and not return_raw_mono_features:
             raise ValueError(
                 "semantic depth initialization requires raw DINO features"
@@ -166,6 +172,7 @@ class MultiViewUniMatch(nn.Module):
         self.semantic_depth_adapters = nn.ModuleList()
         self.semantic_depth_feature_adapters = nn.ModuleList()
         self.semantic_depth_residual_injections = nn.ModuleList()
+        self.semantic_depth_concat_projections = nn.ModuleList()
 
         for i in range(self.num_scales):
             curr_depth_candidates = num_depth_candidates // (4**i)
@@ -283,6 +290,18 @@ class MultiViewUniMatch(nn.Module):
                             ),
                         )
                     )
+            if self.use_semantic_depth_direct_concat:
+                # These are exactly the new semantic-channel slices of the
+                # regressor's 3x3 stem and 1x1 skip convolution.  Keeping them
+                # separate preserves every pretrained tensor and is linearly
+                # identical to convolution over Concat(F_c, F_s).
+                with torch.random.fork_rng(devices=[]):
+                    self.semantic_depth_concat_projections.append(
+                        SemanticDepthConcatProjection(
+                            semantic_channels=semantic_feature_dim,
+                            depth_feature_channels=channels,
+                        )
+                    )
 
         # upsampler
         # concat(lowres_depth, cnn feature, mv feature, mono feature)
@@ -365,6 +384,8 @@ class MultiViewUniMatch(nn.Module):
         semantic_depth_feature_residuals = []
         situation_a_gammas = []
         situation_a_relative_residuals = []
+        situation_b_main_relative_contributions = []
+        situation_b_skip_relative_contributions = []
 
         # first normalize images
         images = self.normalize_images(images)
@@ -501,6 +522,7 @@ class MultiViewUniMatch(nn.Module):
             self.use_semantic_depth_logit_adapter
             or self.use_semantic_depth_feature_adapter
             or self.use_semantic_depth_residual_injection
+            or self.use_semantic_depth_direct_concat
         ):
             if semantic_feature_projector is None:
                 raise ValueError(
@@ -699,17 +721,60 @@ class MultiViewUniMatch(nn.Module):
             )
 
             with torch.amp.autocast(device_type='cuda', enabled=self.use_amp, dtype=torch.bfloat16):
-                out = self.regressor[scale_idx](concat) + self.regressor_residual[
-                    scale_idx
-                ](concat)
+                if self.use_semantic_depth_direct_concat:
+                    projected_semantics = semantic_feature_projector(
+                        semantic_feature_source,
+                        output_size=concat.shape[-2:],
+                    )
+                    semantic_main, semantic_skip = (
+                        self.semantic_depth_concat_projections[scale_idx](
+                            projected_semantics,
+                            concat.shape[-2:],
+                        )
+                    )
+                    base_main = self.regressor[scale_idx][0](concat)
+                    main = base_main + semantic_main
+                    for layer_idx in range(1, len(self.regressor[scale_idx])):
+                        main = self.regressor[scale_idx][layer_idx](main)
+                    base_skip = self.regressor_residual[scale_idx](concat)
+                    out = main + base_skip + semantic_skip
+                    # A detached baseline pass makes the reported depth delta
+                    # honest: Situation B acts before the nonlinear U-Net, so
+                    # its effect cannot be recovered by subtracting a residual
+                    # after the fact.
+                    with torch.no_grad():
+                        base_main_tail = base_main.detach()
+                        for layer_idx in range(1, len(self.regressor[scale_idx])):
+                            base_main_tail = self.regressor[scale_idx][layer_idx](
+                                base_main_tail
+                            )
+                        base_out_for_depth = base_main_tail + base_skip.detach()
+                    situation_b_main_relative_contributions.append(
+                        semantic_main.float().abs().mean(dim=1, keepdim=True)
+                        / base_main.detach().float().abs().mean(
+                            dim=1, keepdim=True
+                        ).clamp_min(1e-6)
+                    )
+                    situation_b_skip_relative_contributions.append(
+                        semantic_skip.float().abs().mean(dim=1, keepdim=True)
+                        / base_skip.detach().float().abs().mean(
+                            dim=1, keepdim=True
+                        ).clamp_min(1e-6)
+                    )
+                else:
+                    out = self.regressor[scale_idx](concat) + self.regressor_residual[
+                        scale_idx
+                    ](concat)
+                    base_out_for_depth = out
 
             out = out.float()
+            base_out_for_depth = base_out_for_depth.float()
 
             # Depth prediction. Screenshot Situation A injects semantics into
             # the frozen ReSplat feature immediately before the pretrained
             # depth head: F_depth' = F_c + gamma * A(F_s).  The same projected
             # field later becomes every Gaussian's semantic attribute z.
-            base_logits = self.depth_head[scale_idx](out)
+            base_logits = self.depth_head[scale_idx](base_out_for_depth)
             base_match_prob = F.softmax(base_logits, dim=1)
             depth_features = out
             if self.use_semantic_depth_residual_injection:
@@ -756,6 +821,7 @@ class MultiViewUniMatch(nn.Module):
                 if (
                     self.use_semantic_depth_feature_adapter
                     or self.use_semantic_depth_residual_injection
+                    or self.use_semantic_depth_direct_concat
                 )
                 else base_logits
             )
@@ -806,6 +872,7 @@ class MultiViewUniMatch(nn.Module):
                 self.use_semantic_depth_logit_adapter
                 or self.use_semantic_depth_feature_adapter
                 or self.use_semantic_depth_residual_injection
+                or self.use_semantic_depth_direct_concat
             ):
                 semantic_depth_candidate_deltas.append(
                     (depth - base_candidate_depth).abs()
@@ -894,6 +961,20 @@ class MultiViewUniMatch(nn.Module):
                     "situation_a_gammas": situation_a_gammas,
                     "situation_a_relative_residuals": (
                         situation_a_relative_residuals
+                    ),
+                    "semantic_depth_candidate_deltas": (
+                        semantic_depth_candidate_deltas
+                    ),
+                }
+            )
+        if self.use_semantic_depth_direct_concat:
+            results_dict.update(
+                {
+                    "situation_b_main_relative_contributions": (
+                        situation_b_main_relative_contributions
+                    ),
+                    "situation_b_skip_relative_contributions": (
+                        situation_b_skip_relative_contributions
                     ),
                     "semantic_depth_candidate_deltas": (
                         semantic_depth_candidate_deltas

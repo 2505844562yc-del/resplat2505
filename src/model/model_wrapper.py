@@ -233,6 +233,7 @@ class ModelWrapper(LightningModule):
                     and not self.encoder.cfg.use_semantic_depth_logit_adapter
                     and not self.encoder.cfg.use_semantic_depth_feature_adapter
                     and not self.encoder.cfg.use_semantic_depth_residual_injection
+                    and not self.encoder.cfg.use_semantic_depth_direct_concat
                 ):
                     with torch.no_grad():
                         curr_gaussians = self.encoder(
@@ -304,6 +305,7 @@ class ModelWrapper(LightningModule):
                 and not self.encoder.cfg.use_semantic_depth_logit_adapter
                 and not self.encoder.cfg.use_semantic_depth_feature_adapter
                 and not self.encoder.cfg.use_semantic_depth_residual_injection
+                and not self.encoder.cfg.use_semantic_depth_direct_concat
             ):
                 with torch.no_grad():
                     gaussians = self.encoder(
@@ -336,6 +338,7 @@ class ModelWrapper(LightningModule):
                     (
                         self.encoder.cfg.use_semantic_depth_logit_adapter
                         or self.encoder.cfg.use_semantic_depth_residual_injection
+                        or self.encoder.cfg.use_semantic_depth_direct_concat
                     )
                     and self.encoder.cfg.semantic_depth_init_rgb_loss_weight > 0
                 )
@@ -353,6 +356,7 @@ class ModelWrapper(LightningModule):
                 (
                     self.encoder.cfg.use_semantic_depth_logit_adapter
                     or self.encoder.cfg.use_semantic_depth_residual_injection
+                    or self.encoder.cfg.use_semantic_depth_direct_concat
                 )
                 and self.encoder.cfg.semantic_depth_init_feature_loss_weight > 0
             ):
@@ -500,6 +504,7 @@ class ModelWrapper(LightningModule):
                 if (
                     self.encoder.cfg.use_semantic_depth_logit_adapter
                     or self.encoder.cfg.use_semantic_depth_residual_injection
+                    or self.encoder.cfg.use_semantic_depth_direct_concat
                 ):
                     init_weight = (
                         self.encoder.cfg.semantic_depth_init_rgb_loss_weight
@@ -917,6 +922,9 @@ class ModelWrapper(LightningModule):
         if hasattr(self.encoder, "situation_a_diagnostics"):
             for name, value in self.encoder.situation_a_diagnostics.items():
                 self.log(f"situation_a/{name}", value)
+        if hasattr(self.encoder, "situation_b_diagnostics"):
+            for name, value in self.encoder.situation_b_diagnostics.items():
+                self.log(f"situation_b/{name}", value)
         if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
             for name, value in self.encoder.semantic_uncertainty_diagnostics.items():
                 self.log(f"semantic_uncertainty/{name}", value)
@@ -947,6 +955,7 @@ class ModelWrapper(LightningModule):
             (
                 self.encoder.cfg.use_semantic_depth_logit_adapter
                 or self.encoder.cfg.use_semantic_depth_residual_injection
+                or self.encoder.cfg.use_semantic_depth_direct_concat
             )
             and self.encoder.cfg.semantic_depth_delta_weight > 0
         ):
@@ -1506,6 +1515,11 @@ class ModelWrapper(LightningModule):
             for name, value in self.encoder.situation_a_diagnostics.items():
                 self.test_step_outputs.setdefault(
                     f"situation_a_{name}", []
+                ).append(value.item())
+        if hasattr(self.encoder, "situation_b_diagnostics"):
+            for name, value in self.encoder.situation_b_diagnostics.items():
+                self.test_step_outputs.setdefault(
+                    f"situation_b_{name}", []
                 ).append(value.item())
         if hasattr(self.encoder, "semantic_uncertainty_diagnostics"):
             for name, value in self.encoder.semantic_uncertainty_diagnostics.items():

@@ -187,6 +187,7 @@ class EncoderReSplatCfg:
     use_semantic_depth_logit_adapter: bool
     use_semantic_depth_feature_adapter: bool
     use_semantic_depth_residual_injection: bool
+    use_semantic_depth_direct_concat: bool
     semantic_depth_hidden_channels: int
     semantic_depth_max_logit_residual: float
     semantic_depth_confidence_floor: float
@@ -315,6 +316,9 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             use_semantic_depth_residual_injection=(
                 self.cfg.use_semantic_depth_residual_injection
             ),
+            use_semantic_depth_direct_concat=(
+                self.cfg.use_semantic_depth_direct_concat
+            ),
             semantic_feature_dim=self.cfg.semantic_feature_dim,
             semantic_depth_teacher_layer=(
                 self.cfg.semantic_feature_teacher_layer
@@ -388,6 +392,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             (
                 self.cfg.use_semantic_depth_logit_adapter
                 or self.cfg.use_semantic_depth_residual_injection
+                or self.cfg.use_semantic_depth_direct_concat
             )
             and not self.cfg.use_semantic_gaussian_features
         ):
@@ -398,6 +403,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             (
                 self.cfg.use_semantic_depth_logit_adapter
                 or self.cfg.use_semantic_depth_residual_injection
+                or self.cfg.use_semantic_depth_direct_concat
             )
             and self.cfg.use_semantic_gaussian_init
         ):
@@ -454,12 +460,27 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 raise ValueError(
                     "Situation A residual gain bound must be non-negative"
                 )
+        if self.cfg.use_semantic_depth_direct_concat:
+            if (
+                self.cfg.use_semantic_depth_residual_injection
+                or self.cfg.use_semantic_depth_feature_adapter
+                or self.cfg.use_semantic_depth_logit_adapter
+            ):
+                raise ValueError(
+                    "strict screenshot Situation B must be evaluated without "
+                    "Situation A or either legacy semantic-depth adapter"
+                )
+            if not self.cfg.use_semantic_gaussian_features:
+                raise ValueError(
+                    "Situation B requires the shared semantic Gaussian field"
+                )
         if (
             self.cfg.semantic_depth_train_only
             and not (
                 self.cfg.use_semantic_depth_logit_adapter
                 or self.cfg.use_semantic_depth_feature_adapter
                 or self.cfg.use_semantic_depth_residual_injection
+                or self.cfg.use_semantic_depth_direct_concat
             )
         ):
             raise ValueError(
@@ -1168,6 +1189,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         self.cfg.use_semantic_depth_logit_adapter
                         or self.cfg.use_semantic_depth_feature_adapter
                         or self.cfg.use_semantic_depth_residual_injection
+                        or self.cfg.use_semantic_depth_direct_concat
                     )
                     else None
                 ),
@@ -1195,6 +1217,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         self.cfg.use_semantic_depth_logit_adapter
                         or self.cfg.use_semantic_depth_feature_adapter
                         or self.cfg.use_semantic_depth_residual_injection
+                        or self.cfg.use_semantic_depth_direct_concat
                     )
                     else None
                 ),
@@ -1247,6 +1270,29 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             }
             self.semantic_depth_delta_regularization = (
                 self.situation_a_diagnostics["relative_residual_l1"]
+            )
+
+        if self.cfg.use_semantic_depth_direct_concat:
+            main_contributions = results_dict[
+                "situation_b_main_relative_contributions"
+            ]
+            skip_contributions = results_dict[
+                "situation_b_skip_relative_contributions"
+            ]
+            depth_deltas = results_dict["semantic_depth_candidate_deltas"]
+            self.situation_b_diagnostics = {
+                "main_relative_contribution": torch.stack(
+                    [value.float().mean() for value in main_contributions]
+                ).mean(),
+                "skip_relative_contribution": torch.stack(
+                    [value.float().mean() for value in skip_contributions]
+                ).mean(),
+                "candidate_relative_delta": torch.stack(
+                    [value.float().mean() for value in depth_deltas]
+                ).mean(),
+            }
+            self.semantic_depth_delta_regularization = (
+                self.situation_b_diagnostics["candidate_relative_delta"]
             )
 
         if self.cfg.use_semantic_depth_logit_adapter:

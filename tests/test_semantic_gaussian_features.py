@@ -34,6 +34,7 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
             "encoder.depth_predictor.semantic_depth_adapters.0.residual_head.weight",
             "encoder.depth_predictor.semantic_depth_feature_adapters.0.residual_head.weight",
             "encoder.depth_predictor.semantic_depth_residual_injections.0.gamma",
+            "encoder.depth_predictor.semantic_depth_concat_projections.0.main_projection.weight",
             "encoder.semantic_state_head.0.weight",
             "encoder.semantic_uncertainty_head.2.bias",
             "encoder.semantic_support_head.0.weight",
@@ -57,6 +58,11 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
         self.assertTrue(
             semantic_depth_parameter_trainable(
                 "encoder.depth_predictor.semantic_depth_residual_injections.0.gamma"
+            )
+        )
+        self.assertTrue(
+            semantic_depth_parameter_trainable(
+                "encoder.depth_predictor.semantic_depth_concat_projections.0.main_projection.weight"
             )
         )
         self.assertTrue(

@@ -3,12 +3,62 @@ import unittest
 import torch
 
 from src.model.semantic_depth_initialization import (
+    SemanticDepthConcatProjection,
     SemanticDepthFeatureAdapter,
     SemanticDepthLogitAdapter,
     SemanticDepthResidualInjection,
     boundary_weighted_semantic_feature_loss,
     normalized_depth_entropy,
 )
+
+
+class ScreenshotSituationBDirectConcatTest(unittest.TestCase):
+    def _projection(self):
+        return SemanticDepthConcatProjection(
+            semantic_channels=4,
+            depth_feature_channels=8,
+        )
+
+    def test_zero_initialized_semantic_channels_are_exact_identity(self):
+        projection = self._projection()
+        main, skip = projection(torch.randn(2, 4, 3, 5), (6, 10))
+        self.assertEqual(main.shape, (2, 8, 6, 10))
+        self.assertEqual(skip.shape, (2, 8, 6, 10))
+        self.assertEqual(main.count_nonzero().item(), 0)
+        self.assertEqual(skip.count_nonzero().item(), 0)
+
+    def test_new_semantic_channel_weights_receive_first_step_gradient(self):
+        projection = self._projection()
+        main, skip = projection(torch.randn(2, 4, 3, 5), (6, 10))
+        (main.square().mean() + main.mean() + skip.mean()).backward()
+        self.assertGreater(
+            projection.main_projection.weight.grad.abs().sum().item(), 0
+        )
+        self.assertGreater(
+            projection.residual_projection.weight.grad.abs().sum().item(), 0
+        )
+
+    def test_split_convolution_is_exactly_direct_concat(self):
+        projection = self._projection()
+        base = torch.nn.Conv2d(7, 8, 3, padding=1)
+        with torch.no_grad():
+            projection.main_projection.weight.normal_()
+        conventional = torch.nn.Conv2d(11, 8, 3, padding=1)
+        with torch.no_grad():
+            conventional.weight[:, :7].copy_(base.weight)
+            conventional.weight[:, 7:].copy_(projection.main_projection.weight)
+            conventional.bias.copy_(base.bias)
+        base_features = torch.randn(2, 7, 6, 10)
+        semantic_features = torch.randn(2, 4, 6, 10)
+        semantic_main, _ = projection(semantic_features, (6, 10))
+        split = base(base_features) + semantic_main
+        direct = conventional(torch.cat((base_features, semantic_features), dim=1))
+        self.assertTrue(torch.allclose(split, direct, atol=1e-5, rtol=1e-5))
+
+    def test_invalid_semantic_channels_are_rejected(self):
+        projection = self._projection()
+        with self.assertRaises(ValueError):
+            projection(torch.randn(2, 3, 4, 4), (4, 4))
 
 
 class NormalizedDepthEntropyTest(unittest.TestCase):
