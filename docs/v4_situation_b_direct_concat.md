@@ -102,8 +102,47 @@ Additional diagnostics:
 - protected pretrained tensors changed: `0 / 812`.
 
 This short screen establishes engineering validity and baseline preservation,
-not a paper-level gain.  Multi-scene medium/full training is still required to
-compare A, B1, and B2 scientifically.
+not a paper-level gain.
+
+## 1,000-step multi-scene B1 validation
+
+The medium run started again from the frozen ReSplat checkpoint rather than
+the single-scene checkpoint. It sampled all 359 DL3DV training scenes and
+trained only the 32,768 B1 parameters. The local boundary cache contains only
+held-out test scenes, so training used the semantic feature losses without
+boundary weighting. Boundary metrics were computed only on the eight fixed
+held-out scenes for which the cache is complete.
+
+The zero-initialized B identity run exactly reproduced every baseline RGB and
+boundary metric on all eight scenes. After 1,000 steps:
+
+| metric | baseline | B1 at 1,000 steps | delta |
+| --- | ---: | ---: | ---: |
+| PSNR | 28.90474868 | 28.90975142 | +0.00500274 |
+| SSIM | 0.88268103 | 0.88277297 | +0.00009194 |
+| LPIPS | 0.11558364 | 0.11558764 | +0.00000400 |
+| initial PSNR | 27.62597966 | 27.62666607 | +0.00068641 |
+| initial SSIM | 0.86239034 | 0.86242678 | +0.00003644 |
+| initial LPIPS | 0.13440175 | 0.13447138 | +0.00006963 |
+| boundary L1 | 0.36431200 | 0.36431973 | +0.00000773 |
+| boundary F1 | 0.18359735 | 0.18373548 | +0.00013813 |
+| initial boundary L1 | 0.36533679 | 0.36531610 | -0.00002069 |
+| initial boundary F1 | 0.17899286 | 0.17906148 | +0.00006862 |
+
+Per-scene consistency was mixed but non-destructive: PSNR improved on 5/8
+scenes, SSIM on 6/8, LPIPS on 3/8, and boundary F1 on 4/8. The largest PSNR
+gain was +0.02894 dB and the largest drop was -0.00616 dB.
+
+The checkpoint audit compared 812 protected pretrained tensors and found zero
+changes. The learned semantic slices had an absolute mean of 0.001468 and a
+maximum of 0.007117. The measured relative contributions were 0.001007 for the
+main stem, 0.002206 for the skip, and 0.000368 for candidate depth. Runtime was
+459 seconds and peak steady-state memory was about 15.2 GiB on one RTX 4090 D.
+
+This is evidence that strict Situation B is trainable and preserves the
+baseline under multi-scene sampling. The gain is deliberately small and is not
+yet a paper-level result; longer B1 training and a matched B2 comparison remain
+the next scientific experiments.
 
 ## Commands
 
@@ -112,6 +151,12 @@ bash scripts/v4_situation_b_eval.sh baseline
 bash scripts/v4_situation_b_eval.sh identity
 bash scripts/v4_situation_b_train.sh 50
 bash scripts/v4_situation_b_eval.sh trained 50
+
+# Fixed eight-scene, multi-scene protocol.
+bash scripts/v4_situation_b_multiscene_eval.sh baseline 1000
+bash scripts/v4_situation_b_multiscene_eval.sh identity 1000
+bash scripts/v4_situation_b_multiscene_train.sh 1000
+bash scripts/v4_situation_b_multiscene_eval.sh trained 1000
 ```
 
 Enable B2 with `V4_UNFREEZE_DEPTH_TAIL=true` and normally initialize it from a
