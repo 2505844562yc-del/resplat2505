@@ -2,9 +2,10 @@
 
 ## Scope
 
-This branch replaces the accumulated V3 semantic refinement heads with one
-paper-facing path.  Historical V3 modules remain in the repository for
-ablation, but the main experiment configuration keeps them disabled.
+This branch replaces the accumulated V2/V3/V4 semantic experiments with one
+paper-facing path.  Obsolete experiment configurations and launch scripts have
+been removed.  A small amount of disabled compatibility code remains in shared
+model files so that existing checkpoints and the current mainline stay stable.
 
 Branch: `paper-clean-semantic-refinement`
 
@@ -137,5 +138,6 @@ FFmpeg.
    mean and standard deviation.
 4. Report quality, semantic consistency, boundary quality, runtime, memory, and
    parameter overhead together.
-5. Use the existing V3 uncertainty/support/ray-depth/split branches only as
-   negative or supplementary ablations; do not re-enable them in the mainline.
+5. Keep uncertainty/support/ray-depth/split ideas out of the mainline.  Their
+   development conclusions are retained in this report/history, but their old
+   experiment entrypoints and large checkpoints have been removed.
