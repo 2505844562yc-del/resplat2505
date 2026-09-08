@@ -819,7 +819,10 @@ class ModelWrapper(LightningModule):
             total_loss = total_loss + depth_smooth_loss
 
         if (
-            self.encoder.cfg.use_semantic_state_refinement
+            (
+                self.encoder.cfg.use_semantic_state_refinement
+                or self.encoder.cfg.use_semantic_residual_adapter
+            )
             and (
                 self.encoder.cfg.semantic_feature_loss_weight > 0
                 or (
@@ -939,6 +942,11 @@ class ModelWrapper(LightningModule):
                 self.encoder.semantic_updater_adapter_diagnostics.items()
             ):
                 self.log(f"semantic_updater_adapter/{name}", value)
+        if hasattr(self.encoder, "semantic_residual_adapter_diagnostics"):
+            for name, value in (
+                self.encoder.semantic_residual_adapter_diagnostics.items()
+            ):
+                self.log(f"semantic_residual_adapter/{name}", value)
         if hasattr(self.encoder, "semantic_split_diagnostics"):
             for name, value in self.encoder.semantic_split_diagnostics.items():
                 self.log(f"semantic_split/{name}", value)
@@ -1011,6 +1019,21 @@ class ModelWrapper(LightningModule):
             total_loss = total_loss + (
                 self.encoder.cfg.semantic_updater_adapter_regularization_weight
                 * semantic_updater_adapter_regularization
+            )
+        if (
+            self.encoder.cfg.use_semantic_residual_adapter
+            and self.encoder.cfg.semantic_residual_adapter_regularization_weight > 0
+        ):
+            semantic_residual_adapter_regularization = (
+                self.encoder.semantic_residual_adapter_regularization
+            )
+            self.log(
+                "loss/semantic_residual_adapter_regularization",
+                semantic_residual_adapter_regularization,
+            )
+            total_loss = total_loss + (
+                self.encoder.cfg.semantic_residual_adapter_regularization_weight
+                * semantic_residual_adapter_regularization
             )
         if (
             self.encoder.cfg.use_semantic_fixed_candidate_split
@@ -1542,6 +1565,13 @@ class ModelWrapper(LightningModule):
             ):
                 self.test_step_outputs.setdefault(
                     f"semantic_updater_adapter_{name}", []
+                ).append(value.item())
+        if hasattr(self.encoder, "semantic_residual_adapter_diagnostics"):
+            for name, value in (
+                self.encoder.semantic_residual_adapter_diagnostics.items()
+            ):
+                self.test_step_outputs.setdefault(
+                    f"semantic_residual_adapter_{name}", []
                 ).append(value.item())
         if hasattr(self.encoder, "semantic_split_diagnostics"):
             for name, value in self.encoder.semantic_split_diagnostics.items():

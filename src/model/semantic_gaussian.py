@@ -15,6 +15,7 @@ SEMANTIC_JOINT_HEAD_NAMES = (
     "encoder.semantic_support_head",
     "encoder.semantic_ray_depth_head",
     "encoder.semantic_updater_adapter",
+    "encoder.semantic_residual_adapter",
     "encoder.semantic_split_head",
 )
 

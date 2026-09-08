@@ -245,6 +245,10 @@ class EncoderReSplatCfg:
     semantic_updater_adapter_regularization_weight: float
     semantic_updater_adapter_train_only: bool
     semantic_updater_unfreeze_last_block: bool
+    use_semantic_residual_adapter: bool
+    semantic_residual_adapter_hidden_channels: int
+    semantic_residual_adapter_gain: float
+    semantic_residual_adapter_regularization_weight: float
     use_semantic_fixed_candidate_split: bool
     semantic_split_hidden_channels: int
     semantic_split_candidate_ratio: float
@@ -782,10 +786,13 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 )
             if (
                 self.cfg.semantic_joint_train_new_heads
-                and not self.cfg.use_semantic_state_refinement
+                and not (
+                    self.cfg.use_semantic_state_refinement
+                    or self.cfg.use_semantic_residual_adapter
+                )
             ):
                 raise ValueError(
-                    "joint semantic-head training requires semantic state refinement"
+                    "joint semantic-head training requires a semantic refinement head"
                 )
             if (
                 self.cfg.use_semantic_updater_adapter
@@ -808,6 +815,43 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 raise ValueError(
                     "last-block unfreezing requires semantic updater adapter"
                 )
+            if (
+                self.cfg.use_semantic_residual_adapter
+                and self.cfg.use_semantic_updater_adapter
+            ):
+                raise ValueError(
+                    "clean semantic residual adapter and legacy semantic updater "
+                    "adapter are mutually exclusive"
+                )
+            if self.cfg.use_semantic_residual_adapter:
+                if not self.cfg.use_semantic_gaussian_features:
+                    raise ValueError(
+                        "semantic residual adapter requires semantic Gaussian features"
+                    )
+                if (
+                    not self.cfg.use_semantic_residual_feedback
+                    or self.cfg.semantic_residual_alignment != "raster_vjp"
+                ):
+                    raise ValueError(
+                        "semantic residual adapter requires raster_vjp feedback"
+                    )
+                if not 0 <= self.cfg.semantic_residual_alpha_floor < 1:
+                    raise ValueError(
+                        "semantic_residual_alpha_floor must satisfy 0 <= value < 1"
+                    )
+                if self.cfg.semantic_residual_adapter_hidden_channels < 1:
+                    raise ValueError(
+                        "semantic_residual_adapter_hidden_channels must be positive"
+                    )
+                if self.cfg.semantic_residual_adapter_gain < 0:
+                    raise ValueError(
+                        "semantic_residual_adapter_gain must be non-negative"
+                    )
+                if self.cfg.semantic_residual_adapter_regularization_weight < 0:
+                    raise ValueError(
+                        "semantic residual adapter regularization must be "
+                        "non-negative"
+                    )
             if (
                 self.cfg.use_semantic_fixed_candidate_split
                 and not self.cfg.use_semantic_uncertainty_refinement
@@ -1080,6 +1124,28 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                         )
                     nn.init.zeros_(self.semantic_split_head[-1].weight)
                     nn.init.zeros_(self.semantic_split_head[-1].bias)
+
+            if self.cfg.use_semantic_residual_adapter:
+                # A single clean path for the paper model: the persistent
+                # semantic state z contributes D channels and Raster-VJP
+                # contributes a D-dimensional descent direction plus relative
+                # magnitude and activity.  The final layer is zero initialized,
+                # so enabling the adapter is exactly the ReSplat updater at step 0.
+                adapter_channels = 2 * self.cfg.semantic_feature_dim + 2
+                with torch.random.fork_rng(devices=[]):
+                    self.semantic_residual_adapter = nn.Sequential(
+                        nn.Linear(
+                            adapter_channels,
+                            self.cfg.semantic_residual_adapter_hidden_channels,
+                        ),
+                        nn.GELU(),
+                        nn.Linear(
+                            self.cfg.semantic_residual_adapter_hidden_channels,
+                            channels,
+                        ),
+                    )
+                nn.init.zeros_(self.semantic_residual_adapter[-1].weight)
+                nn.init.zeros_(self.semantic_residual_adapter[-1].bias)
 
             # ResNet-18 feature extractor (cached)
             self.update_feature = ResNetFeatureWarpper(
@@ -2823,6 +2889,66 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                             f"active={(flat_priority > 0).float().mean().item():.4f}"
                         )
                         self._logged_semantic_updater_adapter_stats = True
+
+                if self.cfg.use_semantic_residual_adapter:
+                    if (
+                        prev_semantic_features is None
+                        or semantic_residual_feedback is None
+                    ):
+                        raise RuntimeError(
+                            "semantic residual adapter requires aligned z and "
+                            "Raster-VJP feedback"
+                        )
+                    flat_semantic_state = rearrange(
+                        prev_semantic_features.detach(),
+                        "b n d -> (b n) d",
+                    )
+                    clean_adapter_raw = self.semantic_residual_adapter(
+                        torch.cat(
+                            (flat_semantic_state, semantic_residual_feedback),
+                            dim=-1,
+                        )
+                    )
+                    # The last two VJP channels are normalized residual
+                    # magnitude and a nonzero-gradient activity mask.  Their
+                    # product is a deterministic confidence gate; no learned
+                    # uncertainty branch is needed in the paper mainline.
+                    clean_adapter_gate = (
+                        semantic_residual_feedback[:, -2:-1]
+                        * semantic_residual_feedback[:, -1:]
+                    )
+                    tmp_state, semantic_residual_adapter_delta = (
+                        apply_semantic_updater_state_residual(
+                            tmp_state,
+                            clean_adapter_raw,
+                            clean_adapter_gate,
+                            gain=self.cfg.semantic_residual_adapter_gain,
+                        )
+                    )
+                    self.semantic_residual_adapter_regularization = (
+                        semantic_residual_adapter_delta.square().mean()
+                    )
+                    self.semantic_residual_adapter_diagnostics = {
+                        "state_delta_abs_mean": (
+                            semantic_residual_adapter_delta.abs().mean().detach()
+                        ),
+                        "state_delta_abs_max": (
+                            semantic_residual_adapter_delta.abs().max().detach()
+                        ),
+                        "gate_mean": clean_adapter_gate.mean().detach(),
+                        "active": (
+                            (clean_adapter_gate > 0).float().mean().detach()
+                        ),
+                    }
+                    if not hasattr(self, "_logged_semantic_residual_adapter_stats"):
+                        print(
+                            "clean semantic residual adapter: "
+                            f"state_mean={semantic_residual_adapter_delta.abs().mean().item():.7f}, "
+                            f"state_max={semantic_residual_adapter_delta.abs().max().item():.7f}, "
+                            f"gate={clean_adapter_gate.mean().item():.4f}, "
+                            f"active={(clean_adapter_gate > 0).float().mean().item():.4f}"
+                        )
+                        self._logged_semantic_residual_adapter_stats = True
 
                 # delta gaussian head
                 delta_gaussians = self.update_head(tmp_state)

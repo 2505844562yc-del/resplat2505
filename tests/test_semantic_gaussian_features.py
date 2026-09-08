@@ -40,6 +40,7 @@ class SemanticJointParameterSelectionTest(unittest.TestCase):
             "encoder.semantic_support_head.0.weight",
             "encoder.semantic_ray_depth_head.2.weight",
             "encoder.semantic_updater_adapter.2.weight",
+            "encoder.semantic_residual_adapter.2.weight",
             "encoder.semantic_split_head.2.weight",
         ):
             self.assertTrue(semantic_joint_parameter_trainable(name))
