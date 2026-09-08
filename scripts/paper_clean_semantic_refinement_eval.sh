@@ -13,6 +13,7 @@ RUN_NAME="${PAPER_RUN_NAME:-clean_joint}"
 OUTPUT_ROOT="${PAPER_OUTPUT_ROOT:-outputs/paper_clean_semantic_refinement}"
 START_CKPT="${PAPER_START_CKPT:-outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt}"
 SAVE_DEMO="${PAPER_SAVE_DEMO:-true}"
+SAVE_VIDEO="${PAPER_SAVE_VIDEO:-false}"
 
 ENABLE_MAINLINE=true
 case "${MODE}" in
@@ -70,12 +71,14 @@ CUDA_VISIBLE_DEVICES=0 "${PYTHON}" -m src.main \
   test.save_input_images="${SAVE_DEMO}" \
   test.save_initial_image="${SAVE_DEMO}" \
   test.save_semantic="$([[ "${ENABLE_MAINLINE}" == true ]] && echo "${SAVE_DEMO}" || echo false)" \
-  test.save_video="${SAVE_DEMO}" \
+  test.save_video="${SAVE_VIDEO}" \
   wandb.mode=disabled \
   output_dir="${OUT}"
 
 echo "metrics=${OUT}/metrics/scores_all_avg.json"
 if [[ "${SAVE_DEMO}" == true ]]; then
   echo "demo_images=${OUT}/images/${SCENE}"
+fi
+if [[ "${SAVE_VIDEO}" == true ]]; then
   echo "demo_video=${OUT}/videos"
 fi

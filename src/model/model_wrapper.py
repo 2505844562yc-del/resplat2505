@@ -1782,12 +1782,12 @@ class ModelWrapper(LightningModule):
                 raise RuntimeError(
                     "semantic visualization requires semantic-carrying Gaussians"
                 )
-            for index, rendered_feature, teacher_feature, alpha in zip(
+            for view_index, (index, rendered_feature, teacher_feature, alpha) in enumerate(zip(
                 render_indices,
                 semantic_render_output[0],
                 semantic_teacher_output[0],
                 semantic_render_alpha[0],
-            ):
+            )):
                 rendered_rgb, teacher_rgb, error_heatmap = (
                     semantic_feature_pair_to_rgb(
                         rendered_feature,
@@ -1807,6 +1807,28 @@ class ModelWrapper(LightningModule):
                 save_image(
                     error_heatmap,
                     semantic_path / f"{index:0>6}_error.png",
+                )
+                panel_parts = [
+                    add_label(rgb_gt[view_index], "Ground Truth"),
+                ]
+                if initial_output is not None:
+                    panel_parts.append(
+                        add_label(
+                            initial_output.color[0, view_index],
+                            "Initial RGB",
+                        )
+                    )
+                panel_parts.extend(
+                    (
+                        add_label(images_prob[view_index], "Refined RGB"),
+                        add_label(teacher_rgb, "Target DINO PCA"),
+                        add_label(rendered_rgb, "Rendered Semantic PCA"),
+                        add_label(error_heatmap, "Semantic Error"),
+                    )
+                )
+                save_image(
+                    hcat(*panel_parts, gap=4),
+                    path / "images" / scene / "demo" / f"{index:0>6}_panel.png",
                 )
 
         # save video
