@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Fixed-scene comparison and optional group-meeting demo export.
 # Usage: bash scripts/paper_clean_semantic_refinement_eval.sh \
-#          <baseline|identity|trained> [steps]
+#          <baseline|identity|trained|b_only|adapter_only> [steps]
 MODE="${1:-identity}"
 STEPS="${2:-50}"
 PYTHON="${PYTHON:-/root/miniconda3/envs/resplat/bin/python}"
@@ -15,12 +15,14 @@ START_CKPT="${PAPER_START_CKPT:-outputs/v3_stage7c/full_joint/500steps/checkpoin
 SAVE_DEMO="${PAPER_SAVE_DEMO:-true}"
 SAVE_VIDEO="${PAPER_SAVE_VIDEO:-false}"
 
-ENABLE_MAINLINE=true
+ENABLE_B=true
+ENABLE_ADAPTER=true
 case "${MODE}" in
   baseline)
     CHECKPOINT="${START_CKPT}"
     OUT="${OUTPUT_ROOT}/${RUN_NAME}/baseline_heldout"
-    ENABLE_MAINLINE=false
+    ENABLE_B=false
+    ENABLE_ADAPTER=false
     ;;
   identity)
     CHECKPOINT="${START_CKPT}"
@@ -31,8 +33,20 @@ case "${MODE}" in
     CHECKPOINT="$(find "${TRAIN_OUT}/checkpoints" -maxdepth 1 -name '*.ckpt' -print -quit)"
     OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps_heldout"
     ;;
+  b_only)
+    TRAIN_OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps"
+    CHECKPOINT="$(find "${TRAIN_OUT}/checkpoints" -maxdepth 1 -name '*.ckpt' -print -quit)"
+    OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps_b_only_heldout"
+    ENABLE_ADAPTER=false
+    ;;
+  adapter_only)
+    TRAIN_OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps"
+    CHECKPOINT="$(find "${TRAIN_OUT}/checkpoints" -maxdepth 1 -name '*.ckpt' -print -quit)"
+    OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps_adapter_only_heldout"
+    ENABLE_B=false
+    ;;
   *)
-    echo "mode must be baseline, identity, or trained" >&2
+    echo "mode must be baseline, identity, trained, b_only, or adapter_only" >&2
     exit 2
     ;;
 esac
@@ -59,18 +73,18 @@ CUDA_VISIBLE_DEVICES=0 "${PYTHON}" -m src.main \
   dataset.image_shape='[256,448]' \
   data_loader.test.num_workers=0 \
   data_loader.test.persistent_workers=false \
-  model.encoder.use_semantic_depth_direct_concat="${ENABLE_MAINLINE}" \
-  model.encoder.use_semantic_gaussian_features="${ENABLE_MAINLINE}" \
-  model.encoder.use_semantic_residual_feedback="${ENABLE_MAINLINE}" \
-  model.encoder.use_semantic_residual_adapter="${ENABLE_MAINLINE}" \
-  model.encoder.semantic_joint_train_new_heads="${ENABLE_MAINLINE}" \
+  model.encoder.use_semantic_depth_direct_concat="${ENABLE_B}" \
+  model.encoder.use_semantic_gaussian_features="$([[ "${ENABLE_B}" == true || "${ENABLE_ADAPTER}" == true ]] && echo true || echo false)" \
+  model.encoder.use_semantic_residual_feedback="${ENABLE_ADAPTER}" \
+  model.encoder.use_semantic_residual_adapter="${ENABLE_ADAPTER}" \
+  model.encoder.semantic_joint_train_new_heads="${ENABLE_ADAPTER}" \
   checkpointing.pretrained_model="${CHECKPOINT}" \
   checkpointing.no_strict_load=true \
   test.save_image="${SAVE_DEMO}" \
   test.save_gt_image="${SAVE_DEMO}" \
   test.save_input_images="${SAVE_DEMO}" \
   test.save_initial_image="${SAVE_DEMO}" \
-  test.save_semantic="$([[ "${ENABLE_MAINLINE}" == true ]] && echo "${SAVE_DEMO}" || echo false)" \
+  test.save_semantic="$([[ "${ENABLE_B}" == true || "${ENABLE_ADAPTER}" == true ]] && echo "${SAVE_DEMO}" || echo false)" \
   test.save_video="${SAVE_VIDEO}" \
   wandb.mode=disabled \
   output_dir="${OUT}"
