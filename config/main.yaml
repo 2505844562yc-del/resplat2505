@@ -83,6 +83,8 @@ test:
   save_video: false
   save_gt_image: false
   save_input_images: false
+  save_initial_image: false
+  save_semantic: false
   save_depth: false
   save_depth_npy: false
   save_depth_concat_img: false

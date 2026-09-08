@@ -69,6 +69,81 @@ except:
 slurm_id_logged = False
 
 
+def semantic_feature_pair_to_rgb(
+    rendered: Tensor,
+    teacher: Tensor,
+    alpha: Tensor,
+    max_fit_samples: int = 32_768,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Visualize two semantic feature maps in one deterministic PCA space.
+
+    Fitting one basis and one color range to both maps is important: separately
+    colored PCA images can look similar even when their features disagree.
+    The third return value is a blue-to-red cosine-error heatmap.
+    """
+    if rendered.ndim != 3 or teacher.shape != rendered.shape:
+        raise ValueError("semantic maps must both have shape [D, H, W]")
+    if alpha.shape != rendered.shape[-2:]:
+        raise ValueError("semantic alpha must have shape [H, W]")
+    feature_dim, height, width = rendered.shape
+    if feature_dim < 3:
+        raise ValueError("semantic PCA visualization requires at least 3 channels")
+
+    rendered_pixels = rearrange(rendered.float(), "d h w -> (h w) d")
+    teacher_pixels = rearrange(teacher.float(), "d h w -> (h w) d")
+    valid = rearrange(alpha.float() >= 0.1, "h w -> (h w)")
+    fit_pixels = torch.cat(
+        (rendered_pixels[valid], teacher_pixels[valid]), dim=0
+    )
+    if fit_pixels.shape[0] < 3:
+        fit_pixels = torch.cat((rendered_pixels, teacher_pixels), dim=0)
+    if fit_pixels.shape[0] > max_fit_samples:
+        sample_indices = torch.linspace(
+            0,
+            fit_pixels.shape[0] - 1,
+            max_fit_samples,
+            device=fit_pixels.device,
+        ).long()
+        fit_pixels = fit_pixels[sample_indices]
+
+    feature_mean = fit_pixels.mean(dim=0, keepdim=True)
+    centered_fit = fit_pixels - feature_mean
+    covariance = centered_fit.T @ centered_fit
+    covariance = covariance / max(centered_fit.shape[0] - 1, 1)
+    _, eigenvectors = torch.linalg.eigh(covariance)
+    basis = eigenvectors[:, -3:]
+    # Eigenvectors are sign-ambiguous. Fix each sign from its largest loading so
+    # rerunning a demo does not arbitrarily invert colors.
+    anchor_rows = basis.abs().argmax(dim=0)
+    signs = torch.sign(basis[anchor_rows, torch.arange(3, device=basis.device)])
+    basis = basis * torch.where(signs == 0, torch.ones_like(signs), signs)
+
+    rendered_scores = (rendered_pixels - feature_mean) @ basis
+    teacher_scores = (teacher_pixels - feature_mean) @ basis
+    fit_scores = centered_fit @ basis
+    lower = torch.quantile(fit_scores, 0.01, dim=0)
+    upper = torch.quantile(fit_scores, 0.99, dim=0)
+    color_scale = (upper - lower).clamp_min(1e-6)
+
+    def colorize(scores: Tensor) -> Tensor:
+        colors = ((scores - lower) / color_scale).clamp(0, 1)
+        return rearrange(colors, "(h w) c -> c h w", h=height, w=width)
+
+    cosine_error = 1 - F.cosine_similarity(
+        rendered.float(), teacher.float(), dim=0
+    )
+    normalized_error = (cosine_error / 2).clamp(0, 1)
+    error_heatmap = torch.stack(
+        (
+            normalized_error,
+            1 - (2 * normalized_error - 1).abs(),
+            1 - normalized_error,
+        ),
+        dim=0,
+    )
+    return colorize(rendered_scores), colorize(teacher_scores), error_heatmap
+
+
 @dataclass
 class OptimizerCfg:
     lr: float
@@ -89,6 +164,8 @@ class TestCfg:
     eval_time_skip_steps: int
     save_gt_image: bool
     save_input_images: bool
+    save_initial_image: bool
+    save_semantic: bool
     save_depth: bool
     save_depth_concat_img: bool
     save_depth_npy: bool
@@ -1206,7 +1283,10 @@ class ModelWrapper(LightningModule):
                 # merge all gaussians
                 # ['means', 'covariances', 'harmonics', 'opacities']
                 gaussians = merge_gaussians(all_gaussians)
-                if self.test_cfg.compute_scores and self.encoder.cfg.num_refine > 0:
+                if (
+                    (self.test_cfg.compute_scores or self.test_cfg.save_initial_image)
+                    and self.encoder.cfg.num_refine > 0
+                ):
                     initial_gaussians_for_eval = gaussians
 
                 # global refine after simply combining local window gaussians
@@ -1279,7 +1359,10 @@ class ModelWrapper(LightningModule):
                         condition_features = gaussians["condition_features"]
                     gaussians = gaussians["gaussians"]
 
-                if self.test_cfg.compute_scores and self.encoder.cfg.num_refine > 0:
+                if (
+                    (self.test_cfg.compute_scores or self.test_cfg.save_initial_image)
+                    and self.encoder.cfg.num_refine > 0
+                ):
                     initial_gaussians_for_eval = gaussians
 
                 # refine
@@ -1410,6 +1493,8 @@ class ModelWrapper(LightningModule):
                     )
 
         semantic_render_output = None
+        semantic_teacher_output = None
+        semantic_render_alpha = None
         if gaussians.semantic_features is not None:
             semantic_render_output, semantic_render_alpha = (
                 self.decoder.forward_features(
@@ -1444,15 +1529,22 @@ class ModelWrapper(LightningModule):
                     f"alpha={semantic_render_alpha.mean().item():.4f}"
                 )
                 self._logged_semantic_gaussian_render = True
-            if not self.test_cfg.render_input_views:
-                target_semantic_features = (
+            if self.test_cfg.render_input_views:
+                if self.test_cfg.save_semantic:
+                    semantic_teacher_output = (
+                        self.encoder.extract_semantic_teacher_features(
+                            batch["context"]["image"], (h, w)
+                        )
+                    )
+            else:
+                semantic_teacher_output = (
                     self.encoder.extract_semantic_teacher_features(
                         batch["target"]["image"], (h, w)
                     )
                 )
                 semantic_cosine = F.cosine_similarity(
                     semantic_render_output,
-                    target_semantic_features,
+                    semantic_teacher_output,
                     dim=2,
                 )
                 semantic_valid = semantic_render_alpha >= 0.1
@@ -1656,18 +1748,66 @@ class ModelWrapper(LightningModule):
             rgb_gt = batch["context"]["image"][0]
         else:
             rgb_gt = batch["target"]["image"][0]
+        render_indices = (
+            batch["context"]["index"][0]
+            if self.test_cfg.render_input_views
+            else batch["target"]["index"][0]
+        )
 
         # Save images.
         if self.test_cfg.save_image:
             if self.test_cfg.save_gt_image:
                 for index, color, gt in zip(
-                    batch["target"]["index"][0], images_prob, rgb_gt
+                    render_indices, images_prob, rgb_gt
                 ):
                     save_image(color, path / "images" / scene / f"color/{index:0>6}.png")
                     save_image(gt, path / "images" / scene / f"color/{index:0>6}_gt.png")
             else:
-                for index, color in zip(batch["target"]["index"][0], images_prob):
+                for index, color in zip(render_indices, images_prob):
                     save_image(color, path / "images" / scene / f"color/{index:0>6}.png")
+
+        if self.test_cfg.save_initial_image and initial_output is not None:
+            for index, color in zip(render_indices, initial_output.color[0]):
+                save_image(
+                    color,
+                    path / "images" / scene / f"initial/{index:0>6}.png",
+                )
+
+        if self.test_cfg.save_semantic:
+            if (
+                semantic_render_output is None
+                or semantic_teacher_output is None
+                or semantic_render_alpha is None
+            ):
+                raise RuntimeError(
+                    "semantic visualization requires semantic-carrying Gaussians"
+                )
+            for index, rendered_feature, teacher_feature, alpha in zip(
+                render_indices,
+                semantic_render_output[0],
+                semantic_teacher_output[0],
+                semantic_render_alpha[0],
+            ):
+                rendered_rgb, teacher_rgb, error_heatmap = (
+                    semantic_feature_pair_to_rgb(
+                        rendered_feature,
+                        teacher_feature,
+                        alpha,
+                    )
+                )
+                semantic_path = path / "images" / scene / "semantic"
+                save_image(
+                    rendered_rgb,
+                    semantic_path / f"{index:0>6}_render.png",
+                )
+                save_image(
+                    teacher_rgb,
+                    semantic_path / f"{index:0>6}_teacher.png",
+                )
+                save_image(
+                    error_heatmap,
+                    semantic_path / f"{index:0>6}_error.png",
+                )
 
         # save video
         if self.test_cfg.save_video:
