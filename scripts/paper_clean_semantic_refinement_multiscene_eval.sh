@@ -11,7 +11,7 @@ PYTHON="${PYTHON:-/root/miniconda3/envs/resplat/bin/python}"
 INDEX="${PAPER_HELDOUT_INDEX:-assets/dl3dv_evaluation/v4_situation_b_8scene_heldout.json}"
 RUN_NAME="${PAPER_RUN_NAME:-clean_joint_multiscene}"
 OUTPUT_ROOT="${PAPER_OUTPUT_ROOT:-outputs/paper_clean_semantic_refinement}"
-START_CKPT="${PAPER_START_CKPT:-outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt}"
+START_CKPT="${PAPER_START_CKPT:-pretrained/resplat-base-dl3dv-256x448-view8-1934a04c.pth}"
 SAVE_DEMO="${PAPER_SAVE_DEMO:-false}"
 
 ENABLE_B=true

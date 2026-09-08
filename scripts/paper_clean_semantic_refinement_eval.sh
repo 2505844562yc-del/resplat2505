@@ -11,7 +11,7 @@ SCENE="${PAPER_SCENE:-032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50a
 INDEX="${PAPER_HELDOUT_INDEX:-assets/dl3dv_evaluation/dl3dv_start_0_distance_40_ctx_8v_tgt_8v.json}"
 RUN_NAME="${PAPER_RUN_NAME:-clean_joint}"
 OUTPUT_ROOT="${PAPER_OUTPUT_ROOT:-outputs/paper_clean_semantic_refinement}"
-START_CKPT="${PAPER_START_CKPT:-outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt}"
+START_CKPT="${PAPER_START_CKPT:-pretrained/resplat-base-dl3dv-256x448-view8-1934a04c.pth}"
 SAVE_DEMO="${PAPER_SAVE_DEMO:-true}"
 SAVE_VIDEO="${PAPER_SAVE_VIDEO:-false}"
 

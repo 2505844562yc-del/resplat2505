@@ -46,6 +46,12 @@ frozen.  Only the following new parameters are trained:
 The full instantiated model has about 224M parameters; Lightning reports 161K
 trainable and 223M non-trainable parameters.
 
+Fresh experiments start directly from the official
+`pretrained/resplat-base-dl3dv-256x448-view8-1934a04c.pth` checkpoint.  The
+fixed semantic projector is deterministically constructed, while Situation B
+and the residual adapter are zero initialized.  The historical V3 checkpoint
+is therefore not required by the clean mainline.
+
 ## Safety and functionality checks
 
 - 125 unit tests passed.

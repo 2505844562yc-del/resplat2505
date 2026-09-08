@@ -11,7 +11,7 @@ SCENE="${PAPER_SCENE:-032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50a
 LR="${PAPER_LR:-1e-4}"
 RUN_NAME="${PAPER_RUN_NAME:-clean_joint}"
 OUTPUT_ROOT="${PAPER_OUTPUT_ROOT:-outputs/paper_clean_semantic_refinement}"
-START_CKPT="${PAPER_START_CKPT:-outputs/v3_stage7c/full_joint/500steps/checkpoints/epoch_1-step_500.ckpt}"
+START_CKPT="${PAPER_START_CKPT:-pretrained/resplat-base-dl3dv-256x448-view8-1934a04c.pth}"
 OUT="${OUTPUT_ROOT}/${RUN_NAME}/${STEPS}steps"
 
 if ! [[ "${STEPS}" =~ ^[1-9][0-9]*$ ]]; then
