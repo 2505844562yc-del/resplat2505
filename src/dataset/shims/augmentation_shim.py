@@ -22,6 +22,10 @@ def reflect_views(views: AnyViews) -> AnyViews:
     for key in ("boundary", "boundary_confidence"):
         if key in views:
             reflected[key] = views[key].flip(-1)
+    if "semantic_teacher_image" in views:
+        reflected["semantic_teacher_image"] = views[
+            "semantic_teacher_image"
+        ].flip(-1)
     return reflected
 
 

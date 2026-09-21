@@ -81,6 +81,7 @@ class DatasetDL3DVCfg(DatasetCfgCommon):
     load_boundaries: bool = False
     boundary_roots: Optional[list[Path]] = None
     boundary_missing_policy: Literal["error", "skip"] = "error"
+    load_semantic_teacher_images: bool = False
 
 class DatasetDL3DV(IterableDataset):
     cfg: DatasetDL3DVCfg
@@ -447,6 +448,17 @@ class DatasetDL3DV(IterableDataset):
                         },
                         "scene": scene,
                     }
+
+                    if self.cfg.load_semantic_teacher_images:
+                        # Preserve the decoded source frames before the ReSplat
+                        # resize/crop shim.  The frozen DINO teacher consumes this
+                        # aligned, higher-resolution view through a separate path.
+                        example_out["context"]["semantic_teacher_image"] = (
+                            context_images
+                        )
+                        example_out["target"]["semantic_teacher_image"] = (
+                            target_images
+                        )
 
                     if self.cfg.load_boundaries:
                         example_out["context"].update({

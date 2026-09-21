@@ -153,6 +153,12 @@ semantic_feature_dim: 16
 semantic_feature_teacher_layer: -1
 semantic_feature_projection_seed: 3407
 semantic_feature_projection_trainable: false
+# Frozen DINO teacher path.  The base configuration preserves the original
+# behavior; paper experiments opt into source-resolution re-extraction below.
+semantic_teacher_max_input_size: 560
+semantic_teacher_view_chunk_size: 4
+semantic_feedback_reextract_teacher: false
+semantic_feedback_resolution_scale: 1
 use_semantic_state_refinement: false
 semantic_state_residual_gain: 0.1
 semantic_feature_loss_weight: 0.1

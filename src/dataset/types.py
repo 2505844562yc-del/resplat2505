@@ -17,6 +17,7 @@ class BatchedViews(TypedDict, total=False):
     extrinsics: Float[Tensor, "batch _ 4 4"]  # batch view 4 4
     intrinsics: Float[Tensor, "batch _ 3 3"]  # batch view 3 3
     image: Float[Tensor, "batch _ _ _ _"]  # batch view channel height width
+    semantic_teacher_image: Float[Tensor, "batch _ _ _ _"]
     boundary: Float[Tensor, "batch _ 1 _ _"]
     boundary_confidence: Float[Tensor, "batch _ 1 _ _"]
     near: Float[Tensor, "batch _"]  # batch view
@@ -34,6 +35,7 @@ class UnbatchedViews(TypedDict, total=False):
     extrinsics: Float[Tensor, "_ 4 4"]
     intrinsics: Float[Tensor, "_ 3 3"]
     image: Float[Tensor, "_ 3 height width"]
+    semantic_teacher_image: Float[Tensor, "_ 3 height width"]
     boundary: Float[Tensor, "_ 1 height width"]
     boundary_confidence: Float[Tensor, "_ 1 height width"]
     near: Float[Tensor, " _"]

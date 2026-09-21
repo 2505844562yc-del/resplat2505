@@ -210,6 +210,10 @@ class EncoderReSplatCfg:
     semantic_feature_teacher_layer: int
     semantic_feature_projection_seed: int
     semantic_feature_projection_trainable: bool
+    semantic_teacher_max_input_size: int
+    semantic_teacher_view_chunk_size: int
+    semantic_feedback_reextract_teacher: bool
+    semantic_feedback_resolution_scale: int
     use_semantic_state_refinement: bool
     semantic_state_residual_gain: float
     semantic_feature_loss_weight: float
@@ -417,6 +421,26 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             )
         if self.cfg.semantic_depth_kl_weight < 0:
             raise ValueError("semantic depth KL weight must be non-negative")
+        if self.cfg.semantic_teacher_max_input_size < 14:
+            raise ValueError("semantic_teacher_max_input_size must be at least 14")
+        if self.cfg.semantic_teacher_view_chunk_size < 1:
+            raise ValueError("semantic_teacher_view_chunk_size must be positive")
+        if self.cfg.semantic_feedback_resolution_scale < 1:
+            raise ValueError("semantic_feedback_resolution_scale must be positive")
+        if (
+            self.cfg.semantic_feedback_resolution_scale != 1
+            and self.cfg.semantic_residual_alignment != "raster_vjp"
+        ):
+            raise ValueError(
+                "higher-resolution semantic feedback requires raster_vjp alignment"
+            )
+        if (
+            self.cfg.semantic_feedback_reextract_teacher
+            and not self.cfg.use_semantic_residual_feedback
+        ):
+            raise ValueError(
+                "semantic teacher re-extraction requires semantic residual feedback"
+            )
         if self.cfg.semantic_depth_delta_weight < 0:
             raise ValueError("semantic depth delta weight must be non-negative")
         if self.cfg.semantic_depth_init_rgb_loss_weight < 0:
@@ -1175,11 +1199,11 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             raise RuntimeError("semantic Gaussian features are disabled")
         b, v, _, original_h, original_w = images.shape
         normalized = self.depth_predictor.normalize_images(images)
-        if original_w > self.depth_predictor.max_mono_vit_input_size:
-            resize_w = self.depth_predictor.max_mono_vit_input_size // 14 * 14
+        max_input_size = self.cfg.semantic_teacher_max_input_size
+        if original_w > max_input_size:
+            resize_w = max_input_size // 14 * 14
             resize_h = int(
-                original_h / original_w
-                * self.depth_predictor.max_mono_vit_input_size
+                original_h / original_w * max_input_size
             ) // 14 * 14
         else:
             resize_h = original_h // 14 * 14
@@ -1196,20 +1220,37 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             "vitb": [2, 5, 8, 11],
             "vitl": [4, 11, 17, 23],
         }[self.cfg.monodepth_vit_type]
+        raw_chunks = []
         with torch.no_grad(), torch.amp.autocast(
             device_type="cuda", enabled=self.cfg.use_amp, dtype=torch.bfloat16
         ):
-            raw_layers = self.depth_predictor.pretrained.get_intermediate_layers(
-                flattened, layer_indices, return_class_token=False
-            )
-            raw = raw_layers[self.cfg.semantic_feature_teacher_layer]
-            raw = rearrange(
-                raw,
-                "bv (h w) c -> bv c h w",
-                h=resize_h // 14,
-                w=resize_w // 14,
-            )
+            for flattened_chunk in flattened.split(
+                self.cfg.semantic_teacher_view_chunk_size, dim=0
+            ):
+                raw_layers = self.depth_predictor.pretrained.get_intermediate_layers(
+                    flattened_chunk, layer_indices, return_class_token=False
+                )
+                raw_chunks.append(
+                    raw_layers[self.cfg.semantic_feature_teacher_layer]
+                )
+            raw = torch.cat(raw_chunks, dim=0)
+        raw = rearrange(
+            raw,
+            "bv (h w) c -> bv c h w",
+            h=resize_h // 14,
+            w=resize_w // 14,
+        )
         projected = self.semantic_feature_projector(raw.detach(), output_size)
+        if not hasattr(self, "_logged_semantic_teacher_shape"):
+            print(
+                "semantic teacher extraction: "
+                f"source={original_h}x{original_w}, "
+                f"dino={resize_h}x{resize_w}, "
+                f"tokens={resize_h // 14}x{resize_w // 14}, "
+                f"output={output_size[0]}x{output_size[1]}, "
+                f"chunk={self.cfg.semantic_teacher_view_chunk_size}"
+            )
+            self._logged_semantic_teacher_shape = True
         return rearrange(projected, "(b v) c h w -> b v c h w", b=b, v=v)
 
     def forward(
@@ -2022,6 +2063,8 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
         init_state = tmp_state
 
         semantic_context_teacher = None
+        semantic_feedback_h = state_h
+        semantic_feedback_w = state_w
         if self.cfg.use_semantic_residual_feedback:
             if prev_semantic_features is None:
                 raise RuntimeError(
@@ -2034,13 +2077,24 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                     "token; expected "
                     f"{expected_gaussians}, got {prev_semantic_features.shape[1]}"
                 )
-            semantic_context_teacher = rearrange(
-                prev_semantic_features.detach(),
-                "b (v h w) d -> b v d h w",
-                v=v,
-                h=state_h,
-                w=state_w,
-            )
+            if self.cfg.semantic_feedback_reextract_teacher:
+                semantic_feedback_h *= self.cfg.semantic_feedback_resolution_scale
+                semantic_feedback_w *= self.cfg.semantic_feedback_resolution_scale
+                semantic_teacher_images = context.get(
+                    "semantic_teacher_image", context["image"]
+                )
+                semantic_context_teacher = self.extract_semantic_teacher_features(
+                    semantic_teacher_images,
+                    (semantic_feedback_h, semantic_feedback_w),
+                )
+            else:
+                semantic_context_teacher = rearrange(
+                    prev_semantic_features.detach(),
+                    "b (v h w) d -> b v d h w",
+                    v=v,
+                    h=state_h,
+                    w=state_w,
+                )
 
         # render input views
         input_render = renderer.forward(
@@ -2077,7 +2131,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                             context["intrinsics"],
                             context["near"],
                             context["far"],
-                            (state_h, state_w),
+                            (semantic_feedback_h, semantic_feedback_w),
                         )
                         semantic_residual_feedback = (
                             semantic_render_residual_features(
@@ -2185,7 +2239,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                             feedback_intrinsics,
                             feedback_near,
                             feedback_far,
-                            (state_h, state_w),
+                            (semantic_feedback_h, semantic_feedback_w),
                             features=semantic_probe,
                         )
                         rendered_normalized = F.normalize(
@@ -2322,7 +2376,9 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                             "semantic raster VJP: "
                             f"context_loss={semantic_context_loss.item():.6f}, "
                             f"active={semantic_residual_feedback[:, -1].mean().item():.4f}, "
-                            f"relative_magnitude={semantic_residual_feedback[:, -2].mean().item():.4f}"
+                            f"relative_magnitude={semantic_residual_feedback[:, -2].mean().item():.4f}, "
+                            f"feedback={semantic_feedback_h}x{semantic_feedback_w}, "
+                            f"teacher_reextract={self.cfg.semantic_feedback_reextract_teacher}"
                         )
                         self._logged_semantic_vjp_stats = True
                 if semantic_residual_feedback.shape[0] != tmp_state.shape[0]:

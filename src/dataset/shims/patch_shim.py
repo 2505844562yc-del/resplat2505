@@ -1,4 +1,5 @@
 from ..types import BatchedExample, BatchedViews
+from .crop_shim import center_crop_to_aspect
 
 
 def apply_patch_shim_to_views(views: BatchedViews, patch_size: int) -> BatchedViews:
@@ -20,11 +21,16 @@ def apply_patch_shim_to_views(views: BatchedViews, patch_size: int) -> BatchedVi
     intrinsics[:, :, 0, 0] *= w / w_new  # fx
     intrinsics[:, :, 1, 1] *= h / h_new  # fy
 
-    return {
+    cropped = {
         **views,
         "image": image,
         "intrinsics": intrinsics,
     }
+    if "semantic_teacher_image" in views:
+        cropped["semantic_teacher_image"] = center_crop_to_aspect(
+            views["semantic_teacher_image"], (h_new, w_new)
+        )
+    return cropped
 
 
 def apply_patch_shim(batch: BatchedExample, patch_size: int) -> BatchedExample:

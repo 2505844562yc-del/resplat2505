@@ -623,7 +623,11 @@ class ModelWrapper(LightningModule):
                 with torch.no_grad():
                     semantic_depth_init_teacher = (
                         self.encoder.extract_semantic_teacher_features(
-                            batch["target"]["image"], (h, w)
+                            batch["target"].get(
+                                "semantic_teacher_image",
+                                batch["target"]["image"],
+                            ),
+                            (h, w),
                         )
                     )
                 init_semantic_cosine = F.cosine_similarity(
@@ -920,7 +924,11 @@ class ModelWrapper(LightningModule):
                 with torch.no_grad():
                     semantic_teacher = (
                         self.encoder.extract_semantic_teacher_features(
-                            batch["target"]["image"], (h, w)
+                            batch["target"].get(
+                                "semantic_teacher_image",
+                                batch["target"]["image"],
+                            ),
+                            (h, w),
                         )
                     )
             else:
@@ -1533,13 +1541,21 @@ class ModelWrapper(LightningModule):
                 if self.test_cfg.save_semantic:
                     semantic_teacher_output = (
                         self.encoder.extract_semantic_teacher_features(
-                            batch["context"]["image"], (h, w)
+                            batch["context"].get(
+                                "semantic_teacher_image",
+                                batch["context"]["image"],
+                            ),
+                            (h, w),
                         )
                     )
             else:
                 semantic_teacher_output = (
                     self.encoder.extract_semantic_teacher_features(
-                        batch["target"]["image"], (h, w)
+                        batch["target"].get(
+                            "semantic_teacher_image",
+                            batch["target"]["image"],
+                        ),
+                        (h, w),
                     )
                 )
                 semantic_cosine = F.cosine_similarity(

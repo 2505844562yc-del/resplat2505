@@ -34,6 +34,7 @@ load_depth: false
 load_boundaries: false
 boundary_roots: null
 boundary_missing_policy: error
+load_semantic_teacher_images: false
 center_pose: false
 
 opencv_pose_format: false

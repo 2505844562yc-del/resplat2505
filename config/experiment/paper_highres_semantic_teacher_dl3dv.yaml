@@ -1,0 +1,116 @@
+# @package _global_
+
+defaults:
+  - override /dataset: dl3dv
+  - override /model/encoder: resplat
+  - override /loss: [mse, lpips]
+  - override /dataset/view_sampler: boundedv2_360
+
+wandb:
+  name: paper_highres_semantic_teacher_dl3dv
+  tags: [dl3dv, semantic-gaussians, situation-b, raster-vjp, highres-teacher]
+
+data_loader:
+  train:
+    batch_size: 1
+
+trainer:
+  max_steps: 300_001
+  num_nodes: 1
+
+model:
+  encoder:
+    num_depth_candidates: 128
+    shim_patch_size: 16
+    upsample_factor: 8
+    lowest_feature_resolution: 8
+    num_refine: 1
+    train_min_refine: 1
+    train_max_refine: 1
+
+    # Contribution 1: Situation B, unchanged from the clean mainline.
+    use_semantic_gaussian_init: false
+    use_semantic_depth_logit_adapter: false
+    use_semantic_depth_feature_adapter: false
+    use_semantic_depth_residual_injection: false
+    use_semantic_depth_direct_concat: true
+    semantic_depth_train_only: false
+    semantic_depth_unfreeze_last_layers: false
+    semantic_depth_kl_weight: 0.0
+    semantic_depth_delta_weight: 0.01
+    semantic_depth_init_rgb_loss_weight: 0.25
+    semantic_depth_init_feature_loss_weight: 0.2
+    semantic_depth_boundary_weight: 4.0
+
+    # Contribution 2: persistent 16-D semantic Gaussian attribute z.
+    use_semantic_gaussian_features: true
+    semantic_feature_dim: 16
+    semantic_feature_projection_trainable: false
+    semantic_feature_loss_weight: 0.1
+    use_semantic_state_refinement: false
+    semantic_state_residual_gain: 0.0
+
+    # Contribution 3: source-resolution frozen DINO teacher.  Re-extract from
+    # the preserved source frame and compute Raster-VJP at 2x recurrent-grid
+    # resolution; the returned feedback still has one vector per Gaussian.
+    semantic_teacher_max_input_size: 840
+    semantic_teacher_view_chunk_size: 2
+    semantic_feedback_reextract_teacher: true
+    semantic_feedback_resolution_scale: 2
+    use_semantic_residual_feedback: true
+    semantic_residual_alignment: raster_vjp
+    semantic_residual_alpha_floor: 0.1
+    semantic_vjp_direct_gain: 0.0
+    use_semantic_residual_adapter: true
+    semantic_residual_adapter_hidden_channels: 256
+    semantic_residual_adapter_gain: 0.1
+    semantic_residual_adapter_regularization_weight: 0.01
+
+    use_semantic_uncertainty_refinement: false
+    semantic_uncertainty_loss_weight: 0.0
+    use_semantic_support_refinement: false
+    use_semantic_geometry_vjp: false
+    use_semantic_ray_depth_head: false
+    use_semantic_updater_adapter: false
+    semantic_updater_adapter_train_only: false
+    semantic_updater_unfreeze_last_block: false
+    use_semantic_fixed_candidate_split: false
+    semantic_split_train_only: false
+
+    # No new learned head is introduced: continue training the already-audited
+    # Situation-B slices and clean recurrent residual adapter only.
+    semantic_joint_train_new_heads: true
+
+loss:
+  lpips:
+    apply_after_step: 0
+    weight: 0.5
+    perceptual_loss: true
+
+dataset:
+  opencv_pose_format: true
+  near: 0.01
+  far: 200.0
+  baseline_scale_bounds: false
+  make_baseline_1: false
+  min_views: 0
+  max_views: 0
+  highres: false
+  mix_re10k: false
+  pose_align_middle_view: true
+  load_remain_context: false
+  random_crop: false
+  load_boundaries: true
+  boundary_roots: [datasets/dl3dv_boundaries_sam2_small]
+  boundary_missing_policy: error
+  load_semantic_teacher_images: true
+  min_size: [384, 512]
+  max_size: [512, 960]
+
+train:
+  depth_smooth_loss_weight: 0.0
+
+test:
+  eval_time_skip_steps: 0
+  compute_scores: true
+  dec_chunk_size: 30

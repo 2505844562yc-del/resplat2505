@@ -131,6 +131,31 @@ def rescale_and_crop_auxiliary(
     return values.reshape(*batch, channels, h_out, w_out)
 
 
+def center_crop_to_aspect(
+    images: Float[Tensor, "*#batch c h w"],
+    shape: tuple[int, int],
+) -> Float[Tensor, "*#batch c h_out w_out"]:
+    """Keep the largest source-resolution crop with the model image aspect ratio.
+
+    This is used by the frozen semantic teacher.  Unlike ``rescale_and_crop``, it
+    never downsamples the source frame, while matching the field of view of the
+    image consumed by ReSplat closely enough for dense feature supervision.
+    """
+    *_, h_in, w_in = images.shape
+    h_out, w_out = shape
+    target_aspect = w_out / h_out
+    source_aspect = w_in / h_in
+    if source_aspect > target_aspect:
+        crop_h = h_in
+        crop_w = min(w_in, round(h_in * target_aspect))
+    else:
+        crop_w = w_in
+        crop_h = min(h_in, round(w_in / target_aspect))
+    row = (h_in - crop_h) // 2
+    col = (w_in - crop_w) // 2
+    return images[..., row : row + crop_h, col : col + crop_w]
+
+
 def apply_crop_shim_to_views(views: AnyViews, shape: tuple[int, int]) -> AnyViews:
     depths = views["depth"] if "depth" in views else None
     if depths is not None:
@@ -154,6 +179,10 @@ def apply_crop_shim_to_views(views: AnyViews, shape: tuple[int, int]) -> AnyView
     for key in ("boundary", "boundary_confidence"):
         if key in views:
             cropped[key] = rescale_and_crop_auxiliary(views[key], shape)
+    if "semantic_teacher_image" in views:
+        cropped["semantic_teacher_image"] = center_crop_to_aspect(
+            views["semantic_teacher_image"], shape
+        )
     return cropped
 
 
