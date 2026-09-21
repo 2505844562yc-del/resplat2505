@@ -4,7 +4,7 @@ set -euo pipefail
 # Export a held-out RGB/depth/semantic panel for the high-resolution teacher.
 STEPS="${1:-300}"
 PYTHON="${PYTHON:-/root/miniconda3/envs/resplat/bin/python}"
-SCENE="${PAPER_SCENE:-0326c9922f2c4649a30904ec7}"
+SCENE="${PAPER_SCENE:-032dee9fb0a8bc1b90871dc5fe950080d0bcd3caf166447f44e60ca50ac04ec7}"
 INDEX="${PAPER_HELDOUT_INDEX:-assets/dl3dv_evaluation/dl3dv_start_0_distance_40_ctx_8v_tgt_8v.json}"
 RUN_NAME="${PAPER_RUN_NAME:-highres_teacher}"
 OUTPUT_ROOT="${PAPER_OUTPUT_ROOT:-outputs/paper_highres_semantic_teacher}"
