@@ -56,3 +56,14 @@ class CandidateVerification:
     visibility_support: Tensor  # [B, V_ref, K, H, W]
     valid_view_count: Tensor  # [B, V_ref, K, H, W]
     view_attention: Tensor  # [B, V_ref, V_target, K, H, W]
+
+
+@dataclass
+class GaussianAssembly:
+    """Final renderer-ready Gaussians and auditable candidate metadata."""
+
+    gaussians: Gaussians
+    candidate_opacity: Tensor  # [B, V, K, H, W]
+    candidate_mask: Tensor  # [B, V, K, H, W]
+    source_view: Tensor  # [B, V*K*H*W]
+    slot_index: Tensor  # [B, V*K*H*W]
