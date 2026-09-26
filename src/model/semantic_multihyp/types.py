@@ -43,3 +43,16 @@ class SemanticPredictions:
     boundary_logits: Tensor  # [B, V, 1, H, W]
     confidence_logits: Tensor  # [B, V, 1, H, W]
     decoder_features: Tensor  # [B, V, C, H/4, W/4]
+
+
+@dataclass
+class CandidateVerification:
+    """Cross-view support for each reference-view depth hypothesis."""
+
+    keep_probability: Tensor  # [B, V_ref, K, H, W]
+    opacity_delta: Tensor  # [B, V_ref, K, H, W]
+    geometric_support: Tensor  # [B, V_ref, K, H, W]
+    semantic_support: Tensor  # [B, V_ref, K, H, W]
+    visibility_support: Tensor  # [B, V_ref, K, H, W]
+    valid_view_count: Tensor  # [B, V_ref, K, H, W]
+    view_attention: Tensor  # [B, V_ref, V_target, K, H, W]
