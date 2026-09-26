@@ -67,3 +67,15 @@ class GaussianAssembly:
     candidate_mask: Tensor  # [B, V, K, H, W]
     source_view: Tensor  # [B, V*K*H*W]
     slot_index: Tensor  # [B, V*K*H*W]
+
+
+@dataclass
+class SemanticMultiHypOutput:
+    """Complete output of semantic-conditioned feed-forward initialization."""
+
+    assembly: GaussianAssembly
+    semantics: SemanticPredictions
+    hypotheses: RayHypotheses
+    verification: CandidateVerification
+    base_depths: Tensor
+    geometry_evidence: GeometryEvidence
