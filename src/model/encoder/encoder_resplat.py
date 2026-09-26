@@ -56,6 +56,7 @@ class EncoderReSplatCfg:
     # Depth supervision and output
     supervise_intermediate_depth: bool
     return_depth: bool
+    return_geometry_evidence: bool
     sample_log_depth: bool
     bilinear_upsample_depth: bool
     no_upsample_depth: bool
@@ -156,6 +157,7 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
             no_upsample_depth=self.cfg.no_upsample_depth,
             use_amp=self.cfg.use_amp,
             return_raw_mono_features=True,
+            return_depth_candidates=self.cfg.return_geometry_evidence,
         )
 
         # upsample features to the original resolution
@@ -753,6 +755,26 @@ class EncoderReSplat(Encoder[EncoderReSplatCfg]):
                 "gaussians": gaussians,
                 "depths": depths
             }
+
+            if self.cfg.return_geometry_evidence:
+                depth_probabilities = rearrange(
+                    results_dict["match_probs"][-1],
+                    "(b v) d h w -> b v d h w",
+                    b=b,
+                    v=v,
+                )
+                depth_candidates = rearrange(
+                    results_dict["depth_candidates"][-1],
+                    "(b v) d h w -> b v d h w",
+                    b=b,
+                    v=v,
+                )
+                results["geometry_evidence"] = {
+                    "depth_probabilities": depth_probabilities,
+                    "depth_candidates": depth_candidates,
+                    "features": rearrange(condition_features, "(b v) c h w -> b v c h w", b=b, v=v),
+                    "semantic_backbone_features": tuple(results_dict["raw_mono_features"]),
+                }
 
             if self.cfg.num_refine > 0:
                 results.update({

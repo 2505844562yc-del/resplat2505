@@ -39,6 +39,7 @@ gaussian_regressor_channels: 512
 # Depth supervision and output
 supervise_intermediate_depth: true
 return_depth: true
+return_geometry_evidence: false
 sample_log_depth: true
 bilinear_upsample_depth: false
 no_upsample_depth: false

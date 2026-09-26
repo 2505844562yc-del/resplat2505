@@ -39,6 +39,7 @@ class MultiViewUniMatch(nn.Module):
         no_upsample_depth=False,
         use_amp=False,
         return_raw_mono_features=False,
+        return_depth_candidates=False,
         max_mono_vit_input_size=560,  # constrain the input resolution to vit
         use_checkpointing=False,
         **kwargs,
@@ -54,6 +55,7 @@ class MultiViewUniMatch(nn.Module):
         self.bilinear_upsample_depth = bilinear_upsample_depth
         self.no_upsample_depth = no_upsample_depth
         self.return_raw_mono_features = return_raw_mono_features
+        self.return_depth_candidates = return_depth_candidates
         self.max_mono_vit_input_size = max_mono_vit_input_size
 
         self.use_amp = use_amp
@@ -265,6 +267,7 @@ class MultiViewUniMatch(nn.Module):
         results_dict = {}
         depth_preds = []
         match_probs = []
+        physical_depth_candidates = []
 
         # first normalize images
         images = self.normalize_images(images)
@@ -593,6 +596,16 @@ class MultiViewUniMatch(nn.Module):
             if scale_idx == 0:
                 # [BV, D, H, W]
                 depth_candidates = depth_candidates.repeat(1, 1, h, w)
+
+            # Expose the physical depth grid used by the posterior. The original
+            # implementation only returned the posterior probabilities, which is
+            # insufficient for preserving multiple depth modes before unprojection.
+            if self.return_depth_candidates:
+                if self.sample_log_depth:
+                    physical_depth_candidates.append(torch.exp(depth_candidates))
+                else:
+                    physical_depth_candidates.append(1.0 / depth_candidates.clamp_min(1e-8))
+
             depth = (match_prob * depth_candidates).sum(
                 dim=1, keepdim=True
             )  # [BV, 1, H, W]
@@ -651,6 +664,8 @@ class MultiViewUniMatch(nn.Module):
 
         results_dict.update({"depth_preds": depth_preds})
         results_dict.update({"match_probs": match_probs})
+        if self.return_depth_candidates:
+            results_dict.update({"depth_candidates": physical_depth_candidates})
 
         return results_dict
 
