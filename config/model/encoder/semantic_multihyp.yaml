@@ -1,0 +1,48 @@
+defaults:
+  - resplat
+
+name: semantic_multihyp
+return_geometry_evidence: true
+num_refine: 0
+train_min_refine: 0
+train_max_refine: 0
+
+semantic_encoder:
+  backbone_channels: 768
+  decoder_channels: 128
+  edge_channels: 64
+  num_backbone_levels: 4
+  num_classes: 100
+  instance_dim: 16
+
+ray_mixture:
+  primary_bandwidth_bins: 2.0
+  secondary_bandwidth_bins: 2.0
+  suppression_width_bins: 3.0
+  gate_hidden_channels: 16
+  boundary_prior_strength: 6.0
+  entropy_prior_strength: 1.5
+  mass_prior_strength: 2.0
+  separation_prior_strength: 1.5
+  gate_bias: -4.0
+  eps: 1.e-8
+
+cross_view_verifier:
+  hidden_channels: 64
+  depth_tolerance_relative: 0.03
+  depth_tolerance_absolute: 0.02
+  visibility_temperature_relative: 0.02
+  keep_bias: -3.0
+  geometry_prior_strength: 4.0
+  semantic_prior_strength: 1.5
+  visibility_prior_strength: 1.5
+  eps: 1.e-6
+
+gaussian_assembler:
+  primary_keep_floor: 0.5
+  secondary_keep_floor: 0.0
+  opacity_delta_scale: 0.5
+  scale_ratio_min: 0.5
+  scale_ratio_max: 2.0
+  mask_threshold: 1.e-4
+  eps: 1.e-6

@@ -1904,6 +1904,8 @@ class ModelWrapper(LightningModule):
             new_params = []
 
             for name, param in self.named_parameters():
+                if not param.requires_grad:
+                    continue
                 if "depth_predictor" in name:
                     pretrained_params.append(param)
                 else:
@@ -1946,6 +1948,8 @@ class ModelWrapper(LightningModule):
             new_params = []
 
             for name, param in self.named_parameters():
+                if not param.requires_grad:
+                    continue
                 if "pretrained" in name:
                     pretrained_params.append(param)
                 else:
@@ -1984,15 +1988,20 @@ class ModelWrapper(LightningModule):
             )
 
         else:
+            trainable_params = [
+                param for param in self.parameters() if param.requires_grad
+            ]
+            if not trainable_params:
+                raise RuntimeError("No trainable parameters were configured")
             if self.optimizer_cfg.adamw_8bit:
                 optimizer = AdamW8bit(
-                    self.parameters(),
+                    trainable_params,
                     lr=self.optimizer_cfg.lr,
                     weight_decay=self.optimizer_cfg.weight_decay,
                 )
             else:
                 optimizer = optim.AdamW(
-                    self.parameters(),
+                    trainable_params,
                     lr=self.optimizer_cfg.lr,
                     weight_decay=self.optimizer_cfg.weight_decay,
                 )

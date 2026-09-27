@@ -2,12 +2,14 @@ from typing import Optional
 
 from .encoder import Encoder
 from .encoder_resplat import EncoderReSplat, EncoderReSplatCfg
+from .encoder_semantic_multihyp import EncoderSemanticMultiHyp, EncoderSemanticMultiHypCfg
 from .visualization.encoder_visualizer import EncoderVisualizer
 ENCODERS = {
     "resplat": (EncoderReSplat, None),
+    "semantic_multihyp": (EncoderSemanticMultiHyp, None),
 }
 
-EncoderCfg = EncoderReSplatCfg
+EncoderCfg = EncoderSemanticMultiHypCfg | EncoderReSplatCfg
 
 
 def get_encoder(cfg: EncoderCfg) -> tuple[Encoder, Optional[EncoderVisualizer]]:

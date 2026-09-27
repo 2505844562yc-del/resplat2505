@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
@@ -14,7 +16,7 @@ class SemanticMultiHypothesisInitializer(nn.Module):
 
     def __init__(
         self,
-        geometry_provider: nn.Module,
+        geometry_provider: Optional[nn.Module],
         semantic_encoder: SemanticSceneEncoder,
         ray_decoder: BoundaryAwareRayMixtureDecoder,
         verifier: CrossViewHypothesisVerifier,
@@ -63,11 +65,21 @@ class SemanticMultiHypothesisInitializer(nn.Module):
         deterministic: bool = False,
         hard_gate: bool = False,
     ) -> SemanticMultiHypOutput:
+        if self.geometry_provider is None:
+            raise RuntimeError("forward requires a geometry provider")
         geometry: GeometryProviderOutput = self.geometry_provider(
             context,
             global_step=global_step,
             deterministic=deterministic,
         )
+        return self.forward_from_geometry(context, geometry, hard_gate=hard_gate)
+
+    def forward_from_geometry(
+        self,
+        context: dict[str, Tensor],
+        geometry: GeometryProviderOutput,
+        hard_gate: bool = False,
+    ) -> SemanticMultiHypOutput:
         semantics = self.semantic_encoder(
             context["image"],
             geometry.evidence.semantic_backbone_features,

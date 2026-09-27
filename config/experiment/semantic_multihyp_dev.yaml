@@ -1,0 +1,23 @@
+# @package _global_
+
+defaults:
+  - dl3dv
+  - override /model/encoder: semantic_multihyp
+
+wandb:
+  name: semantic-multihyp-dev
+  tags: [semantic, multihyp, frozen-geometry]
+
+model:
+  encoder:
+    num_refine: 0
+    return_geometry_evidence: true
+
+optimizer:
+  lr: 2.e-4
+  lr_monodepth: 0.
+  lr_depth: 0.
+
+data_loader:
+  train:
+    batch_size: 1
