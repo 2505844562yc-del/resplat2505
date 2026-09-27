@@ -192,6 +192,7 @@ class ModelWrapper(LightningModule):
     def training_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
         b, v, _, h, w = batch["context"]["image"].shape
+        semantic_multihyp_output = None
         # Run the model.
         if self.train_cfg.train_window_size is not None:
             assert self.train_cfg.train_window_size > 0
@@ -300,6 +301,8 @@ class ModelWrapper(LightningModule):
 
             if isinstance(gaussians, dict):
                 pred_depths = gaussians["depths"]
+                semantic_multihyp_output = gaussians.get(
+                    "semantic_multihyp", semantic_multihyp_output)
                 if self.encoder.cfg.num_refine > 0:
                     condition_features = gaussians["condition_features"]
                 gaussians = gaussians["gaussians"]
@@ -636,6 +639,18 @@ class ModelWrapper(LightningModule):
 
             self.log(f"loss/depth_smooth", depth_smooth_loss)
             total_loss = total_loss + depth_smooth_loss
+
+        if semantic_multihyp_output is not None:
+            semantic_losses = self.encoder.compute_semantic_losses(
+                semantic_multihyp_output,
+                batch["context"],
+            )
+            if semantic_losses:
+                semantic_total = sum(semantic_losses.values())
+                for name, value in semantic_losses.items():
+                    self.log(f"loss/semantic_{name}", value)
+                self.log("loss/semantic_total", semantic_total)
+                total_loss = total_loss + semantic_total
 
         self.log("loss/total", total_loss)
 

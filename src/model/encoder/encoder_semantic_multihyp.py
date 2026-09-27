@@ -15,6 +15,7 @@ from ..semantic_multihyp import (
     SemanticSceneEncoder,
     SemanticSceneEncoderCfg,
 )
+from ..semantic_multihyp.supervision import SemanticSupervision, SemanticSupervisionCfg
 from ..semantic_multihyp.types import GeometryEvidence, GeometryProviderOutput
 from .encoder_resplat import EncoderReSplat, EncoderReSplatCfg
 
@@ -26,6 +27,7 @@ class EncoderSemanticMultiHypCfg(EncoderReSplatCfg):
     ray_mixture: RayMixtureCfg
     cross_view_verifier: CrossViewVerifierCfg
     gaussian_assembler: GaussianAssemblerCfg
+    semantic_supervision: SemanticSupervisionCfg
 
 
 class EncoderSemanticMultiHyp(EncoderReSplat):
@@ -54,6 +56,7 @@ class EncoderSemanticMultiHyp(EncoderReSplat):
             verifier=CrossViewHypothesisVerifier(cfg.cross_view_verifier),
             assembler=HypothesisGaussianAssembler(cfg.gaussian_assembler),
         )
+        self.semantic_supervision = SemanticSupervision(cfg.semantic_supervision)
 
     def train(self, mode: bool = True):
         nn.Module.train(self, mode)
@@ -62,7 +65,13 @@ class EncoderSemanticMultiHyp(EncoderReSplat):
                 child.train(mode)
             else:
                 child.eval()
+        # The supervision module has no learned parameters, but keeping it in
+        # train mode makes the ownership of the training-only logic explicit.
+        self.semantic_supervision.train(mode)
         return self
+
+    def compute_semantic_losses(self, output, context: dict):
+        return self.semantic_supervision(output, context)
 
     def forward(
         self,

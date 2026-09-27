@@ -14,11 +14,16 @@ def reflect_extrinsics(
 
 
 def reflect_views(views: AnyViews) -> AnyViews:
-    return {
+    reflected = {
         **views,
         "image": views["image"].flip(-1),
         "extrinsics": reflect_extrinsics(views["extrinsics"]),
     }
+    # Pixel-aligned supervision must undergo the exact same reflection.
+    for key in ("depth", "semantic", "instance"):
+        if key in views:
+            reflected[key] = views[key].flip(-1)
+    return reflected
 
 
 def apply_augmentation_shim(

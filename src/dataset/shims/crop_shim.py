@@ -105,12 +105,39 @@ def rescale_and_crop(
     return center_crop(images, intrinsics, shape, depths=depths)
 
 
+def rescale_and_crop_discrete(
+    labels: Tensor,
+    input_shape: tuple[int, int],
+    output_shape: tuple[int, int],
+) -> Tensor:
+    """Resize label IDs with nearest-neighbor and mirror the RGB center crop."""
+    h_in, w_in = input_shape
+    h_out, w_out = output_shape
+    if labels.shape[-2:] != input_shape:
+        raise ValueError(
+            f"label shape {labels.shape[-2:]} does not match image shape {input_shape}"
+        )
+    scale_factor = max(h_out / h_in, w_out / w_in)
+    h_scaled = round(h_in * scale_factor)
+    w_scaled = round(w_in * scale_factor)
+    original_shape = labels.shape
+    resized = F.interpolate(
+        labels.reshape(-1, 1, h_in, w_in).float(),
+        size=(h_scaled, w_scaled),
+        mode="nearest",
+    ).reshape(*original_shape[:-2], h_scaled, w_scaled)
+    row = (h_scaled - h_out) // 2
+    col = (w_scaled - w_out) // 2
+    return resized[..., row : row + h_out, col : col + w_out].to(labels.dtype)
+
+
 def apply_crop_shim_to_views(views: AnyViews, shape: tuple[int, int]) -> AnyViews:
+    input_shape = tuple(views["image"].shape[-2:])
     depths = views["depth"] if "depth" in views else None
     if depths is not None:
         images, intrinsics, depths = rescale_and_crop(views["image"], views["intrinsics"], shape,
                                                       depths=depths)
-        return {
+        result = {
             **views,
             "image": images,
             "depth": depths,
@@ -119,11 +146,15 @@ def apply_crop_shim_to_views(views: AnyViews, shape: tuple[int, int]) -> AnyView
     else:
         images, intrinsics = rescale_and_crop(views["image"], views["intrinsics"], shape,
                                               depths=None)
-        return {
+        result = {
             **views,
             "image": images,
             "intrinsics": intrinsics,
         }
+    for key in ("semantic", "instance"):
+        if key in views:
+            result[key] = rescale_and_crop_discrete(views[key], input_shape, shape)
+    return result
 
 
 def apply_crop_shim(example: AnyExample, shape: tuple[int, int]) -> AnyExample:

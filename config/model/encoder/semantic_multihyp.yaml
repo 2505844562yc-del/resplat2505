@@ -46,3 +46,19 @@ gaussian_assembler:
   scale_ratio_max: 2.0
   mask_threshold: 1.e-4
   eps: 1.e-6
+
+semantic_supervision:
+  semantic_weight: 1.0
+  boundary_weight: 0.5
+  instance_weight: 0.25
+  confidence_weight: 0.1
+  hypothesis_weight: 0.5
+  second_gate_weight: 0.25
+  verifier_weight: 0.25
+  semantic_ignore_label: 255
+  instance_ignore_label: 0
+  depth_sigma_relative: 0.03
+  keep_threshold_relative: 0.05
+  instance_temperature: 0.1
+  max_boundary_positive_weight: 20.0
+  eps: 1.e-6

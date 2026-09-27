@@ -10,7 +10,7 @@ import torch
 import torchvision.transforms as tf
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from jaxtyping import Float, UInt8
+from jaxtyping import Float, Int64, UInt8
 from PIL import Image
 from torch import Tensor
 from torch.utils.data import IterableDataset
@@ -46,6 +46,8 @@ class DatasetRE10kCfg(DatasetCfgCommon):
     tartanair: bool = False
     use_index_to_load_chunk: Optional[bool] = False
     load_depth: bool = False
+    load_semantic: bool = False
+    load_instance: bool = False
     pose_align_first_view: bool = False  # align the camera pose to the first view
     center_pose: bool = False  # center and normalize the pose by the distance to the center
     pose_align_middle_view: bool = False  # align the camera pose to the middle view
@@ -234,6 +236,22 @@ class DatasetRE10k(IterableDataset):
                     else:
                         raise NotImplementedError
 
+                if self.cfg.load_semantic:
+                    context_semantics = self.convert_label_maps(
+                        [example["semantics"][index.item()] for index in context_indices]
+                    )
+                    target_semantics = self.convert_label_maps(
+                        [example["semantics"][index.item()] for index in target_indices]
+                    )
+
+                if self.cfg.load_instance:
+                    context_instances = self.convert_label_maps(
+                        [example["instances"][index.item()] for index in context_indices]
+                    )
+                    target_instances = self.convert_label_maps(
+                        [example["instances"][index.item()] for index in target_indices]
+                    )
+
                 # align pose to the first view
                 if self.cfg.pose_align_first_view:
                     extrinsics = camera_normalization(extrinsics[context_indices][0:1], extrinsics)
@@ -293,6 +311,14 @@ class DatasetRE10k(IterableDataset):
                     example['context']['depth'] = context_depths
                     example['target']['depth'] = target_depths
 
+                if self.cfg.load_semantic:
+                    example["context"]["semantic"] = context_semantics
+                    example["target"]["semantic"] = target_semantics
+
+                if self.cfg.load_instance:
+                    example["context"]["instance"] = context_instances
+                    example["target"]["instance"] = target_instances
+
                 if self.stage == "train" and self.cfg.augment:
                     example = apply_augmentation_shim(example)
                 yield apply_crop_shim(example, tuple(self.cfg.image_shape))
@@ -340,6 +366,24 @@ class DatasetRE10k(IterableDataset):
             # mm to meter depth
             torch_depths.append(self.to_tensor(depth) / 1000.)
         return torch.stack(torch_depths).squeeze(1)
+
+    @staticmethod
+    def convert_label_maps(labels: list[Tensor]) -> Int64[Tensor, "batch height width"]:
+        """Decode lossless label PNG bytes or accept already-decoded ID tensors."""
+        decoded = []
+        for label in labels:
+            if label.ndim >= 2:
+                tensor = label.long()
+                if tensor.ndim == 3 and tensor.shape[0] == 1:
+                    tensor = tensor.squeeze(0)
+            else:
+                image = Image.open(BytesIO(label.numpy().tobytes()))
+                array = np.asarray(image, dtype=np.int64).copy()
+                tensor = torch.from_numpy(array)
+            if tensor.ndim != 2:
+                raise ValueError(f"expected a 2D label map, got {tensor.shape}")
+            decoded.append(tensor)
+        return torch.stack(decoded)
 
     def convert_tartanair_depths(
         self,

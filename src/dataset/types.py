@@ -20,6 +20,9 @@ class BatchedViews(TypedDict, total=False):
     near: Float[Tensor, "batch _"]  # batch view
     far: Float[Tensor, "batch _"]  # batch view
     index: Int64[Tensor, "batch _"]  # batch view
+    depth: Float[Tensor, "batch _ height width"]
+    semantic: Int64[Tensor, "batch _ height width"]
+    instance: Int64[Tensor, "batch _ height width"]
 
 
 class BatchedExample(TypedDict, total=False):
@@ -35,6 +38,9 @@ class UnbatchedViews(TypedDict, total=False):
     near: Float[Tensor, " _"]
     far: Float[Tensor, " _"]
     index: Int64[Tensor, " _"]
+    depth: Float[Tensor, "_ height width"]
+    semantic: Int64[Tensor, "_ height width"]
+    instance: Int64[Tensor, "_ height width"]
 
 
 class UnbatchedExample(TypedDict, total=False):
