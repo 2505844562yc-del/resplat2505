@@ -1,0 +1,33 @@
+# @package _global_
+
+defaults:
+  - override /dataset: scannetpp_semantic
+  - override /model/encoder: semantic_multihyp
+  - override /loss: [mse]
+
+wandb:
+  name: semantic-multihyp-scannetpp
+  tags: [scannetpp, semantic, multihyp, frozen-geometry]
+
+model:
+  encoder:
+    num_refine: 0
+    return_geometry_evidence: true
+
+optimizer:
+  lr: 2.e-4
+  lr_monodepth: 0.
+  lr_depth: 0.
+  warm_up_ratio: 0.02
+
+data_loader:
+  train:
+    batch_size: 1
+
+trainer:
+  max_steps: 50_000
+  num_nodes: 1
+
+train:
+  eval_model_every_n_val: 0
+  depth_smooth_loss_weight: 0.

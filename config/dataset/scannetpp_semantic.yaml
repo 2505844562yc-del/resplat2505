@@ -1,0 +1,32 @@
+defaults:
+  - view_sampler: scannetpp_bounded
+
+# The converter writes ScanNet++ into the existing ReSplat chunk contract.
+name: re10k
+roots: [datasets/scannetpp_resplat]
+make_baseline_1: false
+augment: true
+
+image_shape: [256, 448]
+background_color: [0.0, 0.0, 0.0]
+cameras_are_circular: false
+
+baseline_epsilon: 1.e-3
+max_fov: 120.0
+skip_bad_shape: true
+near: 0.1
+far: 20.0
+baseline_scale_bounds: false
+shuffle_val: true
+test_len: -1
+test_chunk_interval: 1
+use_index_to_load_chunk: false
+
+average_pose: false
+center_pose: false
+scannet: true
+tartanair: false
+load_depth: true
+load_semantic: true
+load_instance: true
+train_times_per_scene: 1
