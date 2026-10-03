@@ -13,7 +13,9 @@ cameras_are_circular: false
 
 baseline_epsilon: 1.e-3
 max_fov: 120.0
-skip_bad_shape: true
+# DSLR frames are not 480x640, the hard-coded ScanNet image shape in
+# DatasetRE10k. The conversion stage supplies consistent pinhole frames.
+skip_bad_shape: false
 near: 0.1
 far: 20.0
 baseline_scale_bounds: false
