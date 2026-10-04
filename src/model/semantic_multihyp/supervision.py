@@ -64,6 +64,17 @@ class SemanticSupervision(nn.Module):
             & (labels != self.cfg.semantic_ignore_label)
         )
 
+    def _probability_bce(self, probability: Tensor, target: Tensor) -> Tensor:
+        # These probabilities combine learned gates with geometric priors, so
+        # there is no single raw logit to pass to BCEWithLogits. Evaluate BCE
+        # in float32 even when the model forward uses mixed precision.
+        with torch.autocast(device_type=probability.device.type, enabled=False):
+            return F.binary_cross_entropy(
+                probability.float().clamp(self.cfg.eps, 1.0 - self.cfg.eps),
+                target.float(),
+                reduction="none",
+            )
+
     def _boundary_target(
         self,
         semantic: Tensor | None,
@@ -197,12 +208,8 @@ class SemanticSupervision(nn.Module):
         if boundary_target is not None:
             gate_target = self._resize_labels(boundary_target, hypothesis_size)
             gate_valid = self._resize_labels(boundary_valid, hypothesis_size).bool()
-            gate_loss = F.binary_cross_entropy(
-                output.hypotheses.second_active_probability.clamp(
-                    self.cfg.eps, 1.0 - self.cfg.eps
-                ),
-                gate_target,
-                reduction="none",
+            gate_loss = self._probability_bce(
+                output.hypotheses.second_active_probability, gate_target
             )
             losses["second_gate"] = self.cfg.second_gate_weight * self._masked_mean(
                 gate_loss, gate_valid, self.cfg.eps
@@ -230,12 +237,8 @@ class SemanticSupervision(nn.Module):
             keep_target = (
                 relative_error < self.cfg.keep_threshold_relative
             ).to(candidate_depths.dtype)
-            keep_loss = F.binary_cross_entropy(
-                output.verification.keep_probability.clamp(
-                    self.cfg.eps, 1.0 - self.cfg.eps
-                ),
-                keep_target,
-                reduction="none",
+            keep_loss = self._probability_bce(
+                output.verification.keep_probability, keep_target
             )
             keep_valid = valid_depth.unsqueeze(2).expand_as(keep_loss)
             losses["verification"] = self.cfg.verifier_weight * self._masked_mean(

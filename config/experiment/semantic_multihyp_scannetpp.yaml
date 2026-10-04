@@ -13,6 +13,11 @@ model:
   encoder:
     num_refine: 0
     return_geometry_evidence: true
+    # Match the released DL3DV view8 geometry checkpoint exactly.
+    num_depth_candidates: 128
+    shim_patch_size: 16
+    upsample_factor: 8
+    lowest_feature_resolution: 8
 
 optimizer:
   lr: 2.e-4

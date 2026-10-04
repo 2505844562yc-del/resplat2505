@@ -1,12 +1,18 @@
-name: bounded
+name: boundedv2
 
-num_target_views: 2
+# The released ReSplat checkpoint was trained with eight context views.
+# boundedv2 actually selects all eight (bounded silently returns two).
 num_context_views: 8
+num_target_views: 2
 
-min_distance_between_context_views: 2
+min_distance_between_context_views: 16
 max_distance_between_context_views: 40
-min_distance_to_context_views: 0
+max_distance_to_context_views: 0
 
-warm_up_steps: 10_000
-initial_min_distance_between_context_views: 2
-initial_max_distance_between_context_views: 12
+context_gap_warm_up_steps: 10_000
+target_gap_warm_up_steps: 0
+initial_min_distance_between_context_views: 12
+initial_max_distance_between_context_views: 30
+initial_max_distance_to_context_views: 0
+extra_views_sampling_strategy: farthest_point
+target_views_replace_sample: false
